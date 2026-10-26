@@ -4,6 +4,7 @@
 #   LSUSB     the command that lists USB ids: `lsusb` when installed (also the test stubs on PATH), else tools/usb-ids (sysfs / IORegistry).
 #             A variable, not a function, so it still runs under `timeout`.
 #   mtime F   modification time of F in epoch seconds (GNU `stat -c %Y`, BSD `stat -f %m`).
+#   sha256 F  hex SHA-256 of F (`sha256sum`, else macOS `shasum -a 256`).
 if ! command -v timeout >/dev/null 2>&1; then
 	if command -v gtimeout >/dev/null 2>&1; then
 		timeout() { gtimeout "$@"; }
@@ -14,3 +15,4 @@ fi
 # shellcheck disable=SC2034  # LSUSB is read by the sourcing script
 if command -v lsusb >/dev/null 2>&1; then LSUSB=lsusb; else LSUSB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/usb-ids"; fi
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
