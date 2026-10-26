@@ -116,8 +116,15 @@ static void window_assert_single_reads(void)
 /* Host stand-ins for the linker symbols usbprobe.c gates the image
  * overlap check against. Declared in order; the assert below pins the
  * precondition the device linker script guarantees (_head < _end). */
+#ifdef __APPLE__
+/* Apple ld does not keep definition order; lay both out in one block (Mach-O adds a leading underscore). */
+__asm__(".data\n.globl __head\n__head: .space 64\n.globl __end\n__end: .space 1\n.text\n");
+extern char _head[64];
+extern char _end[1];
+#else
 char _head[64];
 char _end[1];
+#endif
 
 static void con_log_reset(void)
 {
