@@ -4,7 +4,7 @@
 # Loops until a deadline (default 90 s, cap 300), calling tools/phone-state every HR_POLL (3) s; never a bare adb/fastboot call.
 # recovery/android seen while --expect fastboot: runs tools/phone goto fastboot (bounded 45 s), then keeps checking.
 # Prints one line per state change ("+12s recovery"). Last line: RESULT: PASS state=fastboot after Ns | FAIL still absent after Ns
-# (FAIL adds the button instruction). Exit 0 PASS / 1 FAIL / 2 ERROR (bad args, non-bluejay device). Software only: no relay/reset.
+# (FAIL adds the button instruction). Exit 0 PASS / 1 FAIL / 2 ERROR (bad args, a phone that is not PIXOS_DEVICE (default bluejay)). Software only: no relay/reset.
 here=$(dirname "$(readlink -f "$0")")
 POLL=${HR_POLL:-3}
 
@@ -24,7 +24,7 @@ main() {
 		[ "$st" = "$last" ] || { echo "+${SECONDS}s $st"; last=$st; }
 		case "$st" in
 			"$expect") echo "RESULT: PASS state=$st after ${SECONDS}s"; exit 0 ;;
-			other) echo "RESULT: ERROR state=other (not a bluejay; not touched)"; exit 2 ;;
+			other) echo "RESULT: ERROR state=other (not ${PIXOS_DEVICE:-bluejay}; not touched)"; exit 2 ;;
 			recovery|android) # the software-reset landing; "android" = adb up
 				if [ "$expect" = fastboot ] && [ $tried = 0 ]; then
 					tried=1; echo "+${SECONDS}s to-fastboot.sh"

@@ -27,9 +27,9 @@ class T(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tree(d, git)
             m = load(d)
-            a = type('A', (), dict(img=os.path.join(d, 'img'), kind='probe', args=''))
+            a = type('A', (), dict(img=os.path.join(d, 'img'), kind='probe', board='bluejay', args=''))
             m.write(a)
-            ck = type('C', (), dict(img=a.img, expect='probe', allow_stale=False, max_age_min=0))
+            ck = type('C', (), dict(img=a.img, expect='probe', board='bluejay', allow_stale=False, max_age_min=0))
             self.assertEqual(m.check(ck), 0)
             open(os.path.join(d, 'shim', 'a.c'), 'w').write('y')
             self.assertEqual(m.check(ck), 1)  # stale is still refused, git or not
@@ -42,6 +42,21 @@ class T(unittest.TestCase):
         for k in ('git_head', 'built_at'):
             n.pop(k); g.pop(k)
         self.assertEqual(n, g)
+
+    def test_board_must_match(self):
+        """fboot.sh passes the target phone: an image built for another board, or one with no board recorded, is refused."""
+        with tempfile.TemporaryDirectory() as d:
+            tree(d, False)
+            m = load(d)
+            a = type('A', (), dict(img=os.path.join(d, 'img'), kind='probe', board='bluejay', args=''))
+            m.write(a)
+            ck = lambda board: type('C', (), dict(img=a.img, expect='probe', board=board, allow_stale=False, max_age_min=0))
+            self.assertEqual(m.check(ck('bluejay')), 0)
+            self.assertEqual(m.check(ck('oriole')), 1)
+            meta = json.load(open(a.img + '.meta.json'))
+            meta.pop('board')
+            json.dump(meta, open(a.img + '.meta.json', 'w'))
+            self.assertEqual(m.check(ck('bluejay')), 1)  # pre-board sidecar: fail closed
 
 
 if __name__ == '__main__':

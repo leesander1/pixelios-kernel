@@ -1,6 +1,6 @@
 #!/bin/bash
 # One hardware test cycle -> ONE short report (docs/AUTOMATION.md). Progress goes to <run dir>/xrun.log, stdout is the report.
-#   tools/xrun --kernel K [--adt A | --board bluejay] [--cpus N] [--qr S|off] [--restart S] [--args "boot-args"] [--gui] [--rails] [--gpu-handover] [--wlan-hold [--wlan-level 1|2]] [--dvfs K0,K1,K2|read] [--no-usbnet | --usbdma]   (USB UDP log is ON by default since 2026-10-22; QR only with --qr S) (always --rw: a read-only root panics in mount(8))
+#   tools/xrun --kernel K [--adt A | --board bluejay|oriole] [--cpus N] [--qr S|off] [--restart S] [--args "boot-args"] [--gui] [--rails] [--gpu-handover] [--wlan-hold [--wlan-level 1|2]] [--dvfs K0,K1,K2|read] [--no-usbnet | --usbdma]   (USB UDP log is ON by default since 2026-10-22; QR only with --qr S) (always --rw: a read-only root panics in mount(8))
 #              [--reader "qr-log.py options"]   (e.g. "--workers 3 --average 3 --tiles 1"; QL2 boot-args go in --args: sweetqr_fmt=1|2 sweetqr_ver sweetqr_ecc sweetqr_tiles sweetqr_ms sweetqr_k sweetqr_red sweetqr_fec sweetqr_hold)
 #              [--expect REGEX]... [--expect-absent REGEX]... [--duration S] [--label NAME] [--no-flash-check]
 #              [--intent gpu|timing|wlan]   (tools/run-intents.json: exit 2 before any build when the flags/boot-args that intent needs are missing or a forbidden one is present; a label implying an intent with no/none/other --intent exits 2 unless XRUN_INTENT_OK=1)
@@ -23,12 +23,13 @@
 #   tools/xrun --dry-run --from-dir DIR [--stop-on RX]...   rebuild the report of an existing run dir (no phone); with --stop-on, replay an early stop
 #                                            (rewrites report.txt/merged.log in DIR: copy it first if it must stay untouched)
 # Cycle: mkadt -> build-xnu-image -> [take the phone lock] -> to-fastboot -> camera/QR capture -> fboot -> wait for the self-reset -> report.
+# Phone: --board, else PIXOS_DEVICE (default bluejay), is the ONE phone this run builds for and may touch (tools/phone-target.sh); --board exports it to fboot/to-fastboot.
 # Exit: 0 PASS, 1 FAIL/PARTIAL, 2 ERROR.  --no-flash-check: skip the to-fastboot step (the phone is already in fastboot).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 A=${ARTIFACTS:-$HOME/pixelios-artifacts}
 R="python3 tools/xrun_report.py"   # not -I: PIL lives in the user site-packages
-kernel=""; adt=""; board=bluejay; cpus=1; qr=off; restart=""; args=""; duration=""; label=run; check=1; rw="--rw"; gui=""; usbnet="--usbnet"; usbdma=""; rails=""; handover=""; wlan=""; wlanlvl=""; dvfs=()
+kernel=""; adt=""; board=${PIXOS_DEVICE:-bluejay}; cpus=1; qr=off; restart=""; args=""; duration=""; label=run; check=1; rw="--rw"; gui=""; usbnet="--usbnet"; usbdma=""; rails=""; handover=""; wlan=""; wlanlvl=""; dvfs=()
 intent=""; lockwait=0; remote=""; noremote=0; full=0; nocam=0; failons=(); dry=0; fromdir=""; exps=(); abs=(); stops=(); early=0; hard=""; rawexp=(); reader=""; overlay=""; wlanfw=""
 orig=("$@")   # the option loop below shifts "$@" away
 while [ $# -gt 0 ]; do case "$1" in
@@ -38,6 +39,10 @@ while [ $# -gt 0 ]; do case "$1" in
 	--rw) rw=--rw; shift ;; --rails) rails=--rails; shift ;; --gpu-handover) handover=--gpu-handover; shift ;; --wlan-hold) wlan=--wlan-hold; shift ;; --wlan-level) wlanlvl=$2; shift 2 ;; --dvfs) dvfs=(--dvfs "$2"); shift 2 ;; --gui) gui=--gui; shift ;; --usbnet) usbnet=--usbnet; shift ;; --no-usbnet) usbnet=""; shift ;; --usbdma) usbnet=--usbnet; usbdma=--usbdma; shift ;; --no-flash-check) check=0; shift ;;
 	--intent) intent=$2; shift 2 ;; --dry-run) dry=1; shift ;; --from-dir) fromdir=$2; shift 2 ;; --reader) reader=$2; shift 2 ;; --overlay) overlay=$2; shift 2 ;; --wlanfw) wlanfw=$2; shift 2 ;;
 	*) echo "unknown option $1 (see the header of tools/xrun)" >&2; exit 2 ;; esac; done
+export PIXOS_DEVICE=$board; . tools/phone-target.sh
+[ "$dry" = 1 ] || phone_target || { echo "RESULT: ERROR --board/PIXOS_DEVICE '$board' is not a supported phone (tools/phone-targets.txt)"; exit 2; }
+# the XNU image path (build-xnu-image.sh, mkpayload.py) only knows bluejay so far; fboot would refuse its image on another phone anyway
+[ "$dry" = 1 ] || [ "$board" = bluejay ] || { echo "RESULT: ERROR XNU boot images are bluejay-only so far; for $board use tools/probe-run (shim probe)"; exit 2; }
 if [ "$dry" = 1 ]; then [ -d "$fromdir" ] || { echo "--dry-run needs --from-dir DIR" >&2; exit 2; }; a=(); for x in ${stops[@]+"${stops[@]}"}; do a+=(--stop-on "$x"); done; exec $R report "$fromdir" ${a[@]+"${a[@]}"}; fi
 # run intent (tools/run-intents.json): refuse a run that lacks the flags/boot-args its purpose needs BEFORE it costs a phone cycle (AP-55); the label hint is a warning only
 python3 -I tools/run-preflight --intent-check "$intent" --label "$label" -- tools/xrun ${orig[@]+"${orig[@]}"} || exit 2
@@ -92,7 +97,7 @@ if [ "$check" = 1 ]; then
 	for _ in $(seq 1 "$uw"); do grep -qsx 18d1 /sys/bus/usb/devices/*/idVendor && break; sleep 1; done
 	grep -qsx 18d1 /sys/bus/usb/devices/*/idVendor || die "no Google USB device (18d1) appeared within ${uw} s: needs Power+VolDown hold"
 	tools/to-fastboot.sh 120 >>"$LOG" 2>&1 || {
-		if grep -q REFUSED "$LOG"; then die "device is not bluejay (to-fastboot refused): $(tailog)"; fi
+		if grep -q REFUSED "$LOG"; then die "device is not $PHONE_TARGET (to-fastboot refused): $(tailog)"; fi
 		die "needs Power+VolDown hold (phone not reachable by fastboot/adb)"; }
 fi
 

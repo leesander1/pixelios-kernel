@@ -615,6 +615,6 @@ fi
 # provenance sidecar for the image fastboot will boot (tools/fboot.sh refuses images without a matching one)
 if [ -f $O/shim-boot-avb.img ]; then
 	if [ "$boot_xnu" = 1 ]; then kind=xnu; elif [ "$udump_mib" != 0 ]; then kind=udump; else kind=probe; fi
-	"$PYTHON" ../tools/imgmeta.py write $O/shim-boot-avb.img --kind "$kind" --args "${META_ARGS:-}"
+	"$PYTHON" ../tools/imgmeta.py write $O/shim-boot-avb.img --kind "$kind" --board "$board" --args "${META_ARGS:-}"
 fi
 ls -l $O/Image $O/shim-boot*.img

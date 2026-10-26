@@ -1,10 +1,12 @@
 #!/bin/bash
-# What state is the Pixel in, and is it the bluejay? ONE bounded command (every probe is wrapped in `timeout`).
+# What state is the Pixel in, and is it the selected phone (PIXOS_DEVICE, default bluejay: tools/phone-target.sh)? ONE bounded command (every probe is wrapped in `timeout`).
 #   tools/phone-state [--expect android|recovery|fastboot|none] [--wait S] | --self-test
-# Output <= 4 lines, last: RESULT: PASS|FAIL|ERROR state=fastboot|recovery|android|booting|absent|other product=bluejay|unknown
-# Exit 0 PASS / 1 FAIL / 2 ERROR. Serials are never printed. Non-bluejay devices are reported, never touched beyond the id query.
+# Output <= 4 lines, last: RESULT: PASS|FAIL|ERROR state=fastboot|recovery|android|booting|absent|other product=<target>|unknown
+# Exit 0 PASS / 1 FAIL / 2 ERROR. Serials are never printed. Any other phone is reported, never touched beyond the id query.
 # Other tools only assume vendor 18d1. fastboot is queried only when the usb id says fastboot (18d1:d001 / 18d1:4ee0),
 # because a bare `fastboot getvar` against a phone in recovery hangs 120 s.
+here=$(dirname "$(readlink -f "$0")")
+. "$here/phone-target.sh"
 TMO=${PS_TMO:-8}; [ "$TMO" -le 8 ] || TMO=8
 t() { timeout -k 1 "$TMO" "$@"; }
 
@@ -22,8 +24,8 @@ probe() { # sets state, prod, note; returns 0 ok, 2 probe error (timeout)
 		[ "$rc" -lt 124 ] || { note="adb getprop timed out"; return 2; }
 		info=$(echo "$info" | tr -d '\r')
 		dev=$(echo "$info" | sed -n 1p); boot=$(echo "$info" | sed -n 2p)
-		[ "$dev" = bluejay ] || { other=1; continue; }
-		prod=bluejay
+		[ "$dev" = "$PHONE_TARGET" ] || { other=1; continue; }
+		prod=$PHONE_TARGET
 		case "$st" in device) if [ "$boot" = 1 ]; then state=android; else state=booting; fi ;; *) state=recovery ;; esac
 		note="adb $st"; return 0
 	done < <(echo "$out" | sed 1d)
@@ -33,7 +35,7 @@ probe() { # sets state, prod, note; returns 0 ok, 2 probe error (timeout)
 		if [ -n "$out" ]; then
 			p=$(t fastboot getvar product 2>&1 | sed -n 's/^product: *//p' | head -1)
 			[ -n "$p" ] || { note="fastboot getvar product gave nothing/timed out"; return 2; }
-			if [ "$p" = bluejay ]; then state=fastboot prod=bluejay note="fastboot"; else state=other; note="OTHER-DEVICE (not touched)"; fi
+			if [ "$p" = "$PHONE_TARGET" ]; then state=fastboot prod=$PHONE_TARGET note="fastboot"; else state=other; note="OTHER-DEVICE (not touched)"; fi
 			return 0
 		fi
 	fi
@@ -43,6 +45,7 @@ probe() { # sets state, prod, note; returns 0 ok, 2 probe error (timeout)
 
 main() {
 	local expect="" wait=0 end rc ok want=""
+	phone_target || { echo "RESULT: ERROR state=absent product=unknown"; exit 2; }
 	while [ $# -gt 0 ]; do case "$1" in
 		--expect) expect=${2:-}; shift 2 ;; --wait) wait=${2:-}; shift 2 ;;
 		*) echo "usage: $0 [--expect android|recovery|fastboot|none] [--wait S] | --self-test" >&2; exit 2 ;; esac; done
@@ -54,14 +57,14 @@ main() {
 	while :; do
 		probe; rc=$?
 		if [ $rc = 0 ]; then
-			if [ -n "$want" ]; then [ "$state" = "$want" ] && break; else [ "$prod" = bluejay ] && break; fi
+			if [ -n "$want" ]; then [ "$state" = "$want" ] && break; else [ "$prod" = "$PHONE_TARGET" ] && break; fi
 		fi
 		[ "$(date +%s)" -lt "$end" ] || break
 		sleep 2
 	done
 	echo "$note"
 	if [ $rc != 0 ]; then echo "RESULT: ERROR state=$state product=$prod"; exit 2; fi
-	if [ -n "$want" ]; then [ "$state" = "$want" ] && ok=1 || ok=0; else [ "$prod" = bluejay ] && ok=1 || ok=0; fi
+	if [ -n "$want" ]; then [ "$state" = "$want" ] && ok=1 || ok=0; else [ "$prod" = "$PHONE_TARGET" ] && ok=1 || ok=0; fi
 	if [ $ok = 1 ]; then echo "RESULT: PASS state=$state product=$prod"; exit 0; fi
 	echo "RESULT: FAIL state=$state product=$prod"; exit 1
 }
@@ -98,6 +101,11 @@ S
 	chk booting       0 booting  ST_USB=18d1:4ee2 ST_ADB=device ST_BOOT=
 	chk other-adb     1 other    ST_USB=18d1:4ee2 ST_ADB=device ST_DEV=sweet
 	chk other-fb      1 other    ST_USB=18d1:4ee0 ST_DEV=sweet
+	chk oriole-fb     0 fastboot ST_USB=18d1:4ee0 ST_DEV=oriole PIXOS_DEVICE=oriole
+	chk oriole-adb    0 android  ST_USB=18d1:4ee2 ST_ADB=device ST_DEV=oriole PIXOS_DEVICE=oriole
+	chk oriole-not-6a 1 other    ST_USB=18d1:4ee0 ST_DEV=bluejay PIXOS_DEVICE=oriole   # target oriole, a 6a attached: not touched
+	chk 6a-not-oriole 1 other    ST_USB=18d1:4ee2 ST_ADB=device ST_DEV=oriole            # default target bluejay, a Pixel 6 attached
+	chk bad-target    2 absent   ST_USB=18d1:4ee0 ST_DEV=raven PIXOS_DEVICE=raven       # not in tools/phone-targets.txt: refuse before any probe
 	chk hang          2 absent   ST_USB=18d1:4ee2 ST_HANG=1
 	CHK_ARGS="--expect fastboot" chk expect-mismatch 1 android ST_USB=18d1:4ee2 ST_ADB=device
 	CHK_ARGS="--expect none" chk expect-none 0 absent ST_USB=

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """phone-guard: Claude Code PreToolUse hook for Bash (TP-020). Denies hand-typed device commands.
 
-The tools (xrun, probe-run, fboot.sh, fflash-userdata.sh, phone) hold the phone lock and check bluejay; a raw `fastboot flash ...` or
+The tools (xrun, probe-run, fboot.sh, fflash-userdata.sh, phone) hold the phone lock and check the phone is PIXOS_DEVICE (default bluejay); a raw `fastboot flash ...` or
 `adb reboot ...` in an agent's Bash call skips both. Read-only queries (fastboot devices/getvar, adb devices/get-state) pass.
 A guard rail against accidents, NOT a sandbox: indirection (variables, $(...), python subprocess) is not followed.
 Stdin: the hook JSON. Stdout: a deny decision, or nothing (allow). Always exit 0. Test: tools/test_phone_guard.py.
@@ -16,7 +16,7 @@ WRAP = {"sudo", "env", "exec", "nohup", "time", "timeout", "nice", "stdbuf", "se
 KEYWORDS = {"then", "do", "else", "elif", "while", "until", "if", "!", "{", "}"}
 FLAG_ARG = {"-s", "-t", "-H", "-P", "-p"}  # global options that take a value
 WHY = ("hand-typed %s: use the built tools (tools/xrun, tools/probe-run, tools/fboot.sh, tools/fflash-userdata.sh, tools/phone) -- they hold the "
-       "phone lock and verify bluejay (AGENTS.md 'Use the tools'). Read-only queries (fastboot devices|getvar, adb devices|get-state) are allowed.")
+       "phone lock and verify the target phone (AGENTS.md 'Use the tools'). Read-only queries (fastboot devices|getvar, adb devices|get-state) are allowed.")
 
 
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.S)

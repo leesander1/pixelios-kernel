@@ -11,7 +11,7 @@ what a result *means* for the port is still the driver's judgement.
 ## tools/xrun: one hardware cycle
 
 ```
-tools/xrun --kernel K [--adt A | --board bluejay] [--cpus N] [--qr S|off] [--restart S] [--args "boot-args"] [--rw] [--gui] [--usbnet [--usbdma]]
+tools/xrun --kernel K [--adt A | --board bluejay|oriole] [--cpus N] [--qr S|off] [--restart S] [--args "boot-args"] [--rw] [--gui] [--usbnet [--usbdma]]
            [--expect REGEX]... [--expect-absent REGEX]... [--duration S] [--label NAME] [--no-flash-check]
            [--early] [--stop-on REGEX]... [--hard-timeout S] [--reader "qr-log.py options"]
 tools/xrun --dry-run --from-dir logs/runs/<dir> [--stop-on REGEX]...   # rebuild the report of an old run, no phone (copy the dir first: report.txt/merged.log are rewritten)
@@ -122,9 +122,10 @@ tools/phone-state --self-test     # stub lsusb/adb/fastboot on a fake PATH, incl
 ```
 Every probe runs under `timeout` (8 s max; a bare `fastboot getvar` against a phone in recovery hangs 120 s). Order: `lsusb` for
 18d1; `adb devices` + `getprop ro.product.device`/`sys.boot_completed`; `fastboot devices` + `getvar product` only when the usb id
-is 18d1:d001 or 18d1:4ee0 (guess: other tools only assume vendor 18d1). Any non-bluejay device is `state=other`
-(`OTHER-DEVICE (not touched)`). Last line: `RESULT: PASS|FAIL|ERROR state=fastboot|recovery|android|booting|absent|other product=bluejay|unknown`,
-exit 0/1/2; ERROR = a probe timed out. Without `--expect`, PASS means "bluejay present". `--wait S` re-probes every 2 s (cap 300).
+is 18d1:d001 or 18d1:4ee0 (guess: other tools only assume vendor 18d1). The target phone is `PIXOS_DEVICE` (default `bluejay`; allowed:
+`tools/phone-targets.txt`, helper `tools/phone-target.sh`); any other phone is `state=other` (`OTHER-DEVICE (not touched)`), an unlisted
+`PIXOS_DEVICE` is ERROR before any probe. Last line: `RESULT: PASS|FAIL|ERROR state=fastboot|recovery|android|booting|absent|other product=<target>|unknown`,
+exit 0/1/2; ERROR = a probe timed out. Without `--expect`, PASS means "the target phone is present". `--wait S` re-probes every 2 s (cap 300).
 Serials are never printed. `to-fastboot.sh`, `fboot.sh` and `xrun` do not use it yet (own refusal/loop logic; swapping is not trivial).
 Verified with stubs only (self-test), not on hardware.
 ## tools/tool-proposals: the proposal register

@@ -44,6 +44,7 @@ class PhoneStateMachineTest(unittest.TestCase):
         # Use mock bin directory first on PATH
         self.env = dict(os.environ)
         self.env["PATH"] = f"{self.bin_dir}:{self.orig_path}"
+        self.env.pop("PIXOS_DEVICE", None)	# default target bluejay unless a test selects another phone
         self.env["PHONE_STATE_TEST_DIR"] = self.test_dir
         self.env["PHONE_RESET_BL_BIN"] = os.path.join(self.bin_dir, "fake-sweet-reset-bl")	# AP-55: never the real UDP sender
         # TP-020: goto needs the phone lock; the tests hold their own, in a temp dir
@@ -312,14 +313,14 @@ esac
         if os.path.exists(self.fastboot_log):
             os.remove(self.fastboot_log)
 
-        # Calling verify_bluejay_target("fastboot") under this environment
+        # Calling verify_target_device("fastboot") under this environment
         # Must refuse and never invoke fastboot getvar product
         env_orig = os.environ.get("PATH", "")
         try:
             os.environ["PATH"] = f"{self.bin_dir}:{env_orig}"
             logger = phone.Logger()
-            is_bluejay = phone.verify_bluejay_target("fastboot", logger=logger)
-            self.assertFalse(is_bluejay)
+            is_target = phone.verify_target_device("fastboot", logger=logger)
+            self.assertFalse(is_target)
         finally:
             os.environ["PATH"] = env_orig
 
@@ -368,6 +369,44 @@ esac
         if os.path.exists(self.adb_log):
             with open(self.adb_log) as f:
                 self.assertNotIn("reboot bootloader", f.read())
+
+    # 12. PIXOS_DEVICE=oriole: a Pixel 6 is driven like the 6a
+    def test_12_oriole_target_recovery_to_fastboot(self):
+        self.set_state({"state": "recovery", "product": "oriole"})
+        self.env["PIXOS_DEVICE"] = "oriole"
+        res = self.run_phone("goto", "fastboot", "--timeout", "10")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("RESULT: PASS state=fastboot target=fastboot", res.stdout)
+
+    # 13. target and attached phone differ (both directions): refused, nothing sent
+    def test_13_mismatched_phone_is_not_touched(self):
+        for target, attached in (("oriole", "bluejay"), (None, "oriole")):
+            with self.subTest(target=target, attached=attached):
+                self.set_state({"state": "recovery", "product": attached})
+                if target:
+                    self.env["PIXOS_DEVICE"] = target
+                else:
+                    self.env.pop("PIXOS_DEVICE", None)
+                if os.path.exists(self.adb_log):
+                    os.remove(self.adb_log)
+                res = self.run_phone("goto", "fastboot", "--timeout", "5")
+                self.assertNotEqual(res.returncode, 0, res.stdout)
+                self.assertIn("state=other-device", res.stdout)
+                if os.path.exists(self.adb_log):
+                    with open(self.adb_log) as f:
+                        self.assertNotIn("reboot bootloader", f.read())
+
+    # 14. a codename not in tools/phone-targets.txt: ERROR before any device command
+    def test_14_unsupported_target_refused(self):
+        self.set_state({"state": "recovery", "product": "raven"})
+        self.env["PIXOS_DEVICE"] = "raven"
+        for path in (self.adb_log, self.fastboot_log):
+            if os.path.exists(path):
+                os.remove(path)
+        res = self.run_phone("goto", "fastboot", "--timeout", "5")
+        self.assertEqual(res.returncode, 2, res.stdout)
+        self.assertIn("not a supported phone", res.stdout)
+        self.assertFalse(os.path.exists(self.adb_log) or os.path.exists(self.fastboot_log))
 
 
 if __name__ == "__main__":

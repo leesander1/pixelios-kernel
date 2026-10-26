@@ -1,0 +1,4 @@
+# Phones the device tools may touch (AGENTS.md rule 2), one codename per line; each needs device/google/<codename>/board.json.
+# A run picks exactly ONE with PIXOS_DEVICE (default bluejay) and refuses any attached phone that reports another codename.
+bluejay
+oriole

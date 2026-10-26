@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Provenance for boot images, so an old or wrong image is never booted by mistake.
 
-  imgmeta.py write IMG --kind xnu|probe|udump [--args STR]   write IMG.meta.json (sha256, git head, source hash, time)
-  imgmeta.py check IMG --expect KIND [--allow-stale] [--max-age-min N]   exit 0 only if IMG is what it claims to be
+  imgmeta.py write IMG --kind xnu|probe|udump --board CODENAME [--args STR]   write IMG.meta.json (sha256, git head, source hash, time)
+  imgmeta.py check IMG --expect KIND [--board CODENAME] [--allow-stale] [--max-age-min N]   exit 0 only if IMG is what it claims to be
 
 `check` fails when: the sidecar is missing, the image bytes differ from the recorded sha256, the kind is not the one
-expected, the sources the image was built from have changed since (stale), or the image is too old.
+expected, --board is given and the image was built for another board (or before boards were recorded), the sources the image was built from have changed since (stale), or the image is too old.
 """
 import argparse, hashlib, json, os, subprocess, sys, time
 
@@ -58,7 +58,7 @@ def meta_path(img):
 
 
 def write(a):
-    m = {'sha256': sha(a.img), 'size': os.path.getsize(a.img), 'kind': a.kind, 'args': a.args or '',
+    m = {'sha256': sha(a.img), 'size': os.path.getsize(a.img), 'kind': a.kind, 'board': a.board, 'args': a.args or '',
          'git_head': head(), 'src_hash': srchash(), 'built_at': int(time.time())}
     json.dump(m, open(meta_path(a.img), 'w'), indent=1)
     print('imgmeta: %s kind=%s head=%s' % (os.path.basename(a.img), a.kind, m['git_head']))
@@ -78,6 +78,8 @@ def check(a):
             err.append('image bytes changed since it was built (sha256 mismatch)')
         if m['kind'] != a.expect:
             err.append('image kind is %r, expected %r' % (m['kind'], a.expect))
+        if a.board and m.get('board') != a.board:
+            err.append('image was built for board %r, the target phone is %r: rebuild with --board %s' % (m.get('board'), a.board, a.board))
         if not a.allow_stale and srchash() != m['src_hash']:
             err.append('sources changed since this image was built (built at %s): rebuild it' % m['git_head'])
         age = (time.time() - m['built_at']) / 60
@@ -92,8 +94,8 @@ def check(a):
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
     s = p.add_subparsers(dest='cmd', required=True)
-    w = s.add_parser('write'); w.add_argument('img'); w.add_argument('--kind', required=True); w.add_argument('--args')
-    c = s.add_parser('check'); c.add_argument('img'); c.add_argument('--expect', required=True)
+    w = s.add_parser('write'); w.add_argument('img'); w.add_argument('--kind', required=True); w.add_argument('--board', required=True); w.add_argument('--args')
+    c = s.add_parser('check'); c.add_argument('img'); c.add_argument('--expect', required=True); c.add_argument('--board', help='refuse unless the image was built for this board')
     c.add_argument('--allow-stale', action='store_true'); c.add_argument('--max-age-min', type=int, default=0)
     a = p.parse_args()
     sys.exit(write(a) or 0 if a.cmd == 'write' else check(a))
