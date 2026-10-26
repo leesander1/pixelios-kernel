@@ -13,7 +13,7 @@ while [ $# -gt 0 ]; do case "$1" in
 . tools/phone-target.sh
 . tools/hostcompat.sh
 phone_target || exit 2
-python3 -I tools/imgmeta.py check "$img" --expect "$exp" --board "$PHONE_TARGET" "${flags[@]}"
+python3 -I tools/imgmeta.py check "$img" --expect "$exp" --board "$PHONE_TARGET" ${flags[@]+"${flags[@]}"}
 tools/phone-lock check >&2 || { echo "REFUSED: the phone lock is not held by you (tools/phone-lock run --owner NAME -- CMD, or use tools/xrun / tools/probe-run, which take it after the build)" >&2; exit 1; }
 prod=$(timeout 15 fastboot getvar product 2>&1 | sed -n 's/^product: *//p' | head -1)
 [ "$prod" = "$PHONE_TARGET" ] || { echo "REFUSED: device product is '$prod', not $PHONE_TARGET (PIXOS_DEVICE)" >&2; exit 1; }
