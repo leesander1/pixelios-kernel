@@ -1,0 +1,43 @@
+{
+  "name": "Pixel 6",
+  "codename": "oriole",
+  "soc": "google/gs101",
+  "status": "scaffold: sourced values filled, DRAM/userdata/USB DMA still to measure (no hardware run yet)",
+  "dram_banks": [
+    ["0x80000000", "0x80000000"],
+    ["0x880000000", "0x100000000"]
+  ],
+  "xnu_ram": ["0x880000000", "0x100000000"],
+  "fb_base": "0xfac00000",
+  "fb_size": "0x9e3400",
+  "fb_width": 1080,
+  "fb_height": 2400,
+  "fb_stride": 4320,
+  "key_pins": [
+    [0, "0x174D0000", "0xE0", 1],
+    [1, "0x174E0000", "0x40", 1],
+    [2, "0x174E0000", "0x20", 3]
+  ],
+  "key_active_low": 1,
+  "touch_chip_id": ["0x36", "0x48"],
+  "touch_usi": 11,
+  "touch_max_hz": 10000000,
+  "touch_max_coords": [1079, 2399],
+  "touch_spi_pin_func": 2,
+  "touch_pin_clk": ["gpp23", 0],
+  "touch_pin_mosi": ["gpp23", 1],
+  "touch_pin_miso": ["gpp23", 2],
+  "touch_pin_cs": ["gpp23", 3],
+  "touch_pin_irq": ["gpa9", 0],
+  "touch_pin_reset": ["gpp26", 0],
+  "touch_pin_mux": ["gpp26", 1],
+  "notes": {
+    "dram_banks": "GUESS, conservative: a 4 GiB subset copied from bluejay (6 GiB phone). The Pixel 6 has 8 GiB, so the real high bank is larger; a subset only under-uses RAM. MEASURE with a probe run (the shim prints the live /memory banks) before trusting it.",
+    "xnu_ram": "GUESS: the same hole-free 4 GiB as bluejay, a subset of what an 8 GiB phone should have. Re-derive from the measured banks (must hold no carve-out, 32 MiB aligned).",
+    "userdata_mib": "NOT SET: depends on the storage size (128/256 GiB). MEASURE from the GPT (ufs-gpt-read) before any check-ios-root.py run; until then no iOS root may be built for oriole.",
+    "usb_dma_range": "NOT SET: bluejay's abl@f8800000 window was observed in its live FDT. MEASURE oriole's reserved-memory from the probe log; XNU patch 0082 refuses USB without it.",
+    "fb": "Read from source: mainline gs101-oriole.dts:36-48, splash@fac00000, 1080*2400*4 = 0x9E3400, stride 4320, a8r8g8b8 (docs/research/05-fact-check.md section 3a). Not yet observed on oriole.",
+    "key_pins": "Read from source: mainline gs101-pixel-common.dtsi:40-63 and :799-853 is the oriole/raven common file (docs/research/05-fact-check.md section 2): power gpa10-1 (0x174D0000, bank 0xE0), vol+ gpa8-1 and vol- gpa7-3 (0x174E0000, banks 0x40/0x20), all active low. Not yet observed on oriole.",
+    "touch": "Read from source: Google kernel/devices/google/raviole@81506b991a5385be6c59ee27df4dda2b1379c507 (android-gs-raviole-6.1-android16) dts/gs101-oriole-touch.dtsi includes gs101/gs101-fts-touch.dtsi (the same shared file bluejay uses) and sets st,dchip_id <0x36 0x48>, st,max-coords <1079 2399>, panel samsung_s6e3fc3. Pins/USI/frequency come from the shared gs101-fts-touch.dtsi and gs101-common-touch.dtsi and are copied from bluejay; TODO(verify) that raviole does not override them before enabling touch."
+  }
+}
