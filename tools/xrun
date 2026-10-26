@@ -40,6 +40,7 @@ while [ $# -gt 0 ]; do case "$1" in
 	--intent) intent=$2; shift 2 ;; --dry-run) dry=1; shift ;; --from-dir) fromdir=$2; shift 2 ;; --reader) reader=$2; shift 2 ;; --overlay) overlay=$2; shift 2 ;; --wlanfw) wlanfw=$2; shift 2 ;;
 	*) echo "unknown option $1 (see the header of tools/xrun)" >&2; exit 2 ;; esac; done
 export PIXOS_DEVICE=$board; . tools/phone-target.sh
+. tools/hostcompat.sh   # timeout, sha256, LSUSB on a macOS host
 [ "$dry" = 1 ] || phone_target || { echo "RESULT: ERROR --board/PIXOS_DEVICE '$board' is not a supported phone (tools/phone-targets.txt)"; exit 2; }
 if [ "$dry" = 1 ]; then [ -d "$fromdir" ] || { echo "--dry-run needs --from-dir DIR" >&2; exit 2; }; a=(); for x in ${stops[@]+"${stops[@]}"}; do a+=(--stop-on "$x"); done; exec $R report "$fromdir" ${a[@]+"${a[@]}"}; fi
 # run intent (tools/run-intents.json): refuse a run that lacks the flags/boot-args its purpose needs BEFORE it costs a phone cycle (AP-55); the label hint is a warning only
@@ -71,7 +72,7 @@ stopkv=(); for x in ${stops[@]+"${stops[@]}"}; do stopkv+=("stop_on=$x"); done
 for x in ${failons[@]+"${failons[@]}"}; do stopkv+=("fail_on=$x"); done
 if head=$(git rev-parse --short HEAD 2>/dev/null); then git diff --quiet HEAD || head=$head+dirty; else head=nogit; fi
 $R mark "$D" label="$label" kernel="$kernel" cpus="$cpus" qr="$qr" restart="$restart" duration="$duration" \
-	git_head="$head" t_start=@now ${remote:+remote=1} ${hard:+hard_timeout="$hard"} kernel_sha256="$(sha256sum "$kernel" | cut -d' ' -f1)" \
+	git_head="$head" t_start=@now ${remote:+remote=1} ${hard:+hard_timeout="$hard"} kernel_sha256="$(sha256 "$kernel")" \
 	${stopkv[@]+"${stopkv[@]}"} ${exps[@]+"${exps[@]}"} ${abs[@]+"${abs[@]}"}
 
 if [ -n "$adt" ]; then cp "$adt" "$D/A.adt"; else python3 -I tools/mkadt.py "$D/A.adt" --board "$board" >>"$LOG" 2>&1 || die "mkadt failed: $(tailog)"; fi
@@ -92,8 +93,8 @@ $R mark "$D" t_start=@now   # --hard-timeout counts from here, not from the star
 if [ "$check" = 1 ]; then
 	# we own the phone now: after a previous run it is off the bus for a while while it reboots; wait (bounded) before asking for a button hold
 	uw=${XRUN_USB_WAIT:-120}; [[ $uw =~ ^[0-9]+$ ]] || uw=120
-	for _ in $(seq 1 "$uw"); do grep -qsx 18d1 /sys/bus/usb/devices/*/idVendor && break; sleep 1; done
-	grep -qsx 18d1 /sys/bus/usb/devices/*/idVendor || die "no Google USB device (18d1) appeared within ${uw} s: needs Power+VolDown hold"
+	for _ in $(seq 1 "$uw"); do tools/usb-ids --has 18d1 && break; sleep 1; done
+	tools/usb-ids --has 18d1 || die "no Google USB device (18d1) appeared within ${uw} s: needs Power+VolDown hold"
 	tools/to-fastboot.sh 120 >>"$LOG" 2>&1 || {
 		if grep -q REFUSED "$LOG"; then die "device is not $PHONE_TARGET (to-fastboot refused): $(tailog)"; fi
 		die "needs Power+VolDown hold (phone not reachable by fastboot/adb)"; }
@@ -124,16 +125,16 @@ $R mark "$D" t_end=@now
 stop_capture; cap=""   # the phone lock stays held until exit: the EARLY/TIMEOUT recovery below still talks to the phone
 # bounded probe: every call has its own timeout (never a bare fastboot call)
 probe() { local u a f
-	u=$(timeout 5 lsusb 2>/dev/null | awk '{print $6}' | grep -E '^(18d1|05ac)' | tr '\n' ' ')
+	u=$(timeout 5 $LSUSB 2>/dev/null | awk '{print $6}' | grep -E '^(18d1|05ac)' | tr '\n' ' ')
 	a=$(timeout 8 adb get-state 2>&1 | head -1 | cut -c1-60)
 	f=$(timeout 8 fastboot getvar product 2>&1 | sed -n 's/^product: *//p' | head -1)
 	echo "usb ids [${u:-none}] adb [${a:-no answer}] fastboot product [${f:-no answer}]"; }
 case "$how" in
 EARLY) # every stop pattern seen: recover the phone if it can be reached, else say so in one line
 	el=$(( $(date +%s) - tb )); left=$(( ${secs:-0} - el ))
-	if { [ -n "$remote" ] || grep -qsx 18d1 /sys/bus/usb/devices/*/idVendor; } && timeout 120 tools/to-fastboot.sh 90 >>"$LOG" 2>&1; then
+	if { [ -n "$remote" ] || tools/usb-ids --has 18d1; } && timeout 120 tools/to-fastboot.sh 90 >>"$LOG" 2>&1; then
 		$R mark "$D" phone="back in fastboot (stopped early${remote:+, software reset over the USB link})"
-	elif [ -n "$remote" ] || grep -qsx 18d1 /sys/bus/usb/devices/*/idVendor; then $R mark "$D" phone="to-fastboot failed${remote:+ after the software reset request} (see xrun.log); check tools/phone-state before a Power+VolDown hold"
+	elif [ -n "$remote" ] || tools/usb-ids --has 18d1; then $R mark "$D" phone="to-fastboot failed${remote:+ after the software reset request} (see xrun.log); check tools/phone-state before a Power+VolDown hold"
 	else $R mark "$D" phone="still running; self-reset due in ~$(( left > 0 ? left : 0 ))s / Power+VolDown hold"; fi ;;
 TIMEOUT) $R mark "$D" phone="$(probe)" ;;
 esac

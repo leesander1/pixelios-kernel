@@ -12,6 +12,12 @@ if [ "${1:-}" != "--stage" ]; then
 	exit 2
 fi
 # The interface is found by MAC when the line runs, so it can be staged before the phone enumerates.
-echo "sudo sh -c 'i=\$(ip -o link | grep -i $PHONE_MAC | cut -d: -f2 | cut -d@ -f1 | xargs); ip addr replace $HOST_ADDR dev \$i && ip link set \$i up'"
+if [ "$(uname -s)" = Darwin ]; then
+	# macOS: no `ip`; ifconfig lists "enN: flags=..." then "ether <mac>" per interface (the CDC-ECM function's MAC, as on Linux: guess,
+	# not yet observed with the phone)
+	echo "sudo sh -c 'i=\$(ifconfig -a | awk \"/^[a-z]/{n=\\\$1; sub(/:\\\$/,\\\"\\\",n)} /ether $PHONE_MAC/{print n}\"); ifconfig \"\$i\" inet ${HOST_ADDR%/*} netmask 255.255.255.0 up'"
+else
+	echo "sudo sh -c 'i=\$(ip -o link | grep -i $PHONE_MAC | cut -d: -f2 | cut -d@ -f1 | xargs); ip addr replace $HOST_ADDR dev \$i && ip link set \$i up'"
+fi
 echo "RESULT: PASS staged" >&2
 exit 0

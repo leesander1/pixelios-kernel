@@ -64,4 +64,6 @@ Then, in each shell, `. tools/macos/env.sh` before `shim/build.sh`, `tools/check
 
 Host differences the phone tools handle themselves (`tools/hostcompat.sh`, `tools/usb-ids`): USB ids come from the IORegistry instead of
 sysfs/`lsusb`, and `tools/usb-log.py` finds the shim's CDC-ACM log as `/dev/cu.usbmodem*` (read from Apple's IOSerialBSDClient keys,
-*not yet observed* with the gadget). `xrun` is still Linux-only (sysfs, ESP camera, `ip`).
+observed 2026-10-26: the gadget enumerated as `/dev/cu.usbmodem00011` and the probe log was captured). `xrun` runs too, without the
+ESP camera (`--no-camera`): USB presence comes from `tools/usb-ids`, and `tools/sweet-usbnet.sh --stage` prints an `ifconfig` line for
+the USB Ethernet link instead of an `ip` one (picks the interface by the phone's MAC; *not yet observed* with a phone).

@@ -156,7 +156,23 @@ class Stage(unittest.TestCase):
         self.assertEqual(len(out.splitlines()), 1)
         self.assertTrue(out.startswith("sudo sh -c '"))
         self.assertIn("02:00:5e:77:ee:01", out)
-        self.assertIn("192.168.7.1/24", out)
+        self.assertIn("inet 192.168.7.1 netmask 255.255.255.0" if sys.platform == "darwin" else "192.168.7.1/24", out)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS form of the staged line")
+    def test_macos_line_picks_the_phone_interface(self):
+        """run the staged line without sudo against a stub ifconfig: the interface with the phone's MAC gets 192.168.7.1/24"""
+        out = subprocess.run([str(HERE / "sweet-usbnet.sh"), "--stage"], capture_output=True, text=True, timeout=10).stdout.strip()
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "log")
+            with open(os.path.join(d, "ifconfig"), "w") as f:
+                f.write("#!/bin/sh\nif [ \"$1\" = -a ]; then printf 'lo0: flags=8049<UP> mtu 16384\\n\\tinet 127.0.0.1\\n"
+                        "en0: flags=8863<UP> mtu 1500\\n\\tether a4:83:e7:11:22:33\\n"
+                        "en12: flags=8863<UP> mtu 1500\\n\\tether 02:00:5e:77:ee:01\\n'; else echo \"$*\" >> \"$IFLOG\"; fi\n")
+            os.chmod(os.path.join(d, "ifconfig"), 0o755)
+            env = dict(os.environ, PATH=d + ":" + os.environ["PATH"], IFLOG=log)
+            subprocess.run(["sh", "-c", out[len("sudo "):]], env=env, check=True, timeout=10)
+            with open(log) as f:
+                self.assertEqual(f.read().strip(), "en12 inet 192.168.7.1 netmask 255.255.255.0 up")
 
 
 if __name__ == "__main__":

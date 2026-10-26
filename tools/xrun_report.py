@@ -12,7 +12,7 @@ merged.log, luma.json (frame brightness cache), report.json, report.txt.
 A log with "hfs_mountroot failed" / "cannot mount root" is a FAIL (dead iOS root); a truthy run.json key no_root_ok
 (set by hand or by a future flag) lets a rootless hold-flavor run opt out.
 """
-import calendar, glob, json, os, pathlib, re, sys, time
+import calendar, glob, json, os, pathlib, re, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qrmerge  # noqa: E402
@@ -89,25 +89,31 @@ def mark(d, kvs):
     save(os.path.join(d, "run.json"), run)
 
 
-def usb_present(vid="18d1"):
+def bus_ids():
+    """[(vid, pid)] of the USB devices on the bus: sysfs on Linux, tools/usb-ids (the IORegistry) on macOS"""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "usb-ids")],
+                                 capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        return [tuple(w.split(":")) for w in re.findall(r"ID ([0-9a-f]{4}:[0-9a-f]{4})", out)]
+    ids = []
     for p in glob.glob("/sys/bus/usb/devices/*/idVendor"):
         try:
-            if pathlib.Path(p).read_text().strip() == vid:
-                return True
+            ids.append((pathlib.Path(p).read_text().strip(), pathlib.Path(p).with_name("idProduct").read_text().strip()))
         except OSError:
             pass
-    return False
+    return ids
+
+
+def usb_present(vid="18d1"):
+    return any(v == vid for v, _ in bus_ids())
 
 
 def usb_ids(vid="18d1"):
     """vid:pid of the first Google USB device on the bus (18d1:4ee0 = fastboot, 18d1:d001 = recovery), or ''"""
-    for p in glob.glob("/sys/bus/usb/devices/*/idVendor"):
-        try:
-            if pathlib.Path(p).read_text().strip() == vid:
-                return "%s:%s" % (vid, pathlib.Path(p).with_name("idProduct").read_text().strip())
-        except OSError:
-            pass
-    return ""
+    return next(("%s:%s" % (v, p) for v, p in bus_ids() if v == vid), "")
 
 
 def stop_seen(d, pats):

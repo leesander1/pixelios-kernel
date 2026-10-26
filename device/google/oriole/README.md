@@ -28,4 +28,4 @@ Still from source only: key pins and touch (see `notes` in `board.json`).
 
 `mkadt.py --board oriole`, `mkpayload.py --board oriole` and `build-xnu-image.sh --board oriole --adt A` build it; the ADT is bluejay's
 except `model-number` and the About > Model Name text. The first boot hands XNU the same 4 GiB as bluejay (`xnu_ram`); 6 GiB is
-measured free. Not booted yet: needs a kernel (`xnu.yml` CI), an iOS root in `userdata`, and `xrun` on a Linux host (not ported to macOS).
+measured free. Not booted yet: needs a kernel (`xnu.yml` CI), an iOS root in `userdata` (`tools/fflash-userdata.sh`, `PIXOS_DEVICE=oriole`), then `xrun --board oriole --no-camera`.
