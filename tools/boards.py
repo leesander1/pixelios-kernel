@@ -65,6 +65,11 @@ def soc_dir(board):
     return os.path.relpath(_DEVICES[board][1], ROOT)
 
 
+def device_name(board):
+    """the device's display name from board.json ("Pixel 6a"), shown in iOS Settings > About > Model Name"""
+    return _DEVICES[board][2]["name"]
+
+
 def _touch_macros(v):
     """TOUCH_* macros for shim/touchprobe.c: the same soc.json/board.json keys tools/mkadt.py puts in /sweet-touch
     (xnu patches 0088/0089/0092 read them from the ADT), so the shim probe and the XNU driver cannot disagree."""

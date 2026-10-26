@@ -240,9 +240,11 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', no_ufs=False, wla
     ])
 
     product_props = d22ap_product()
-    # About > Model Name reads /product product-description (MG ArtworkTraits, docs about-identity report)
+    # About > Model Name reads /product product-description (MG ArtworkTraits, docs about-identity report); the gs101 boards show their
+    # board.json name, sweet keeps the text it always had
+    model_name, model_number = ('Pixel 6a', 'bluejay') if board == 'sweet' else (boards.device_name(board), board)
     if product_props:
-        product_props = [(k, v) for k, v in product_props if k != 'product-description'] + [('product-description', cstr('Pixel 6a'))]
+        product_props = [(k, v) for k, v in product_props if k != 'product-description'] + [('product-description', cstr(model_name))]
     product = [node('product', [ph()] + product_props)] if product_props else []
 
     # bsd/dev/sweet_usb.c (patch 0082): the gs101 DWC3 and the DRAM range ABL keeps its event
@@ -354,7 +356,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', no_ufs=False, wla
         # About > Serial Number / Model Number: IOPlatformExpert serial-number -> IOPlatformSerialNumber,
         # MG ModelNumber = root model-number (region-info stays absent so the row is exactly this text). Fake serial, never a real one.
         ('serial-number', cstr('PixOS-Project/pixelios')),
-        ('model-number', cstr('bluejay')),
+        ('model-number', cstr(model_number)),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),

@@ -41,8 +41,6 @@ while [ $# -gt 0 ]; do case "$1" in
 	*) echo "unknown option $1 (see the header of tools/xrun)" >&2; exit 2 ;; esac; done
 export PIXOS_DEVICE=$board; . tools/phone-target.sh
 [ "$dry" = 1 ] || phone_target || { echo "RESULT: ERROR --board/PIXOS_DEVICE '$board' is not a supported phone (tools/phone-targets.txt)"; exit 2; }
-# the XNU image path (build-xnu-image.sh, mkpayload.py) only knows bluejay so far; fboot would refuse its image on another phone anyway
-[ "$dry" = 1 ] || [ "$board" = bluejay ] || { echo "RESULT: ERROR XNU boot images are bluejay-only so far; for $board use tools/probe-run (shim probe)"; exit 2; }
 if [ "$dry" = 1 ]; then [ -d "$fromdir" ] || { echo "--dry-run needs --from-dir DIR" >&2; exit 2; }; a=(); for x in ${stops[@]+"${stops[@]}"}; do a+=(--stop-on "$x"); done; exec $R report "$fromdir" ${a[@]+"${a[@]}"}; fi
 # run intent (tools/run-intents.json): refuse a run that lacks the flags/boot-args its purpose needs BEFORE it costs a phone cycle (AP-55); the label hint is a warning only
 python3 -I tools/run-preflight --intent-check "$intent" --label "$label" -- tools/xrun ${orig[@]+"${orig[@]}"} || exit 2
@@ -81,7 +79,7 @@ if [ -n "$adt" ]; then cp "$adt" "$D/A.adt"; else python3 -I tools/mkadt.py "$D/
 mkdir -p shim/out
 fw=3600; tools/phone-lock check >/dev/null 2>&1 && fw=60   # under `phone-lock run` the phone is already ours: do not hold it for an hour behind a gate
 ( flock -x -w $fw 9 || { echo "shim/out busy: a gate or build in this worktree holds shim/out/.build.lock" >&2; exit 98; }
-  tools/build-xnu-image.sh --kernel "$kernel" --adt "$D/A.adt" --qr "$qr" --cpus "$cpus" ${restart:+--restart "$restart"} ${args:+--args "$args"} ${overlay:+--overlay "$overlay"} ${wlanfw:+--wlanfw "$wlanfw"} $rw $rails $handover $wlan ${wlanlvl:+--wlan-level "$wlanlvl"} "${dvfs[@]}" $gui $usbnet $usbdma >"$D/build.out" 2>>"$LOG" 9>&- &&
+  tools/build-xnu-image.sh --board "$board" --kernel "$kernel" --adt "$D/A.adt" --qr "$qr" --cpus "$cpus" ${restart:+--restart "$restart"} ${args:+--args "$args"} ${overlay:+--overlay "$overlay"} ${wlanfw:+--wlanfw "$wlanfw"} $rw $rails $handover $wlan ${wlanlvl:+--wlan-level "$wlanlvl"} "${dvfs[@]}" $gui $usbnet $usbdma >"$D/build.out" 2>>"$LOG" 9>&- &&
   cp shim/out/shim-boot-avb.img "$D/shim-boot-avb.img" && cp shim/out/shim-boot-avb.img.meta.json "$D/shim-boot-avb.img.meta.json" ) 9>shim/out/.build.lock \
 	|| die "build-xnu-image failed: $(tail -n 3 "$D/build.out" "$LOG" | tr '\n' ' ' | cut -c1-200)"
 [ -z "$usbnet" ] || $R mark "$D" usbnet=1
