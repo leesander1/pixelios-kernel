@@ -7,7 +7,7 @@
     ["0x80000000", "0x80000000"],
     ["0x880000000", "0x180000000"]
   ],
-  "xnu_ram": ["0x880000000", "0x180000000"],
+  "xnu_ram": ["0x880000000", "0x100000000"],
   "fb_base": "0xfac00000",
   "fb_size": "0x9e3400",
   "fb_width": 1080,
@@ -35,7 +35,7 @@
   "touch_pin_mux": ["gpp26", 1],
   "notes": {
     "dram_banks": "OBSERVED on the phone 2026-10-26 (hardware/probe-log-2026-10-26-run3.txt, FDT memory section): /memory banks 0x80000000, 0x880000000, 0x900000000, 0x980000000, 2 GiB each (8 GiB). The three high banks are contiguous and merged here (0x880000000..0xA00000000, 6 GiB); UFS MAP banks=4 rsv=0x1B agrees.",
-    "xnu_ram": "From the measured map (hardware/probe-log-2026-10-26-run3.txt): all 27 reserved ranges end at or below 0xFD900000, so the high range 0x880000000..0xA00000000 holds no carve-out; 32 MiB aligned. 2 GiB more than bluejay's 4 GiB: no XNU boot with 6 GiB has been tried yet.",
+    "xnu_ram": "CHOICE for the first XNU boot: the same 4 GiB (0x880000000..0x980000000) bluejay boots with, so only the device differs. MEASURED available (hardware/probe-log-2026-10-26-run3.txt): all 27 reserved ranges end at or below 0xFD900000, so the whole high range 0x880000000..0xA00000000 (6 GiB) is hole-free; raise size to 0x180000000 once a 4 GiB boot works (no XNU boot with 6 GiB has been tried).",
     "userdata_mib": "OBSERVED 2026-10-26 (hardware/probe-log-2026-10-26-run3.txt): GPT userdata first=0x22F1E6 last=0x1DC03FA on LUN 0 (LUN 0 last LBA 0x1DC03FF, 4 KiB blocks: the 128 GB model) = 112914 MiB, identical to bluejay.",
     "usb_dma_range": "OBSERVED 2026-10-26 (hardware/probe-log-2026-10-26-run3.txt): reserved-memory abl@f8800000, no-map, 16 MiB; ABL's DWC3 event buffer GEVNTADR 0xF8DEB000 lies inside it ('USB EVBUF in reserved abl@f8800000'). Same window as bluejay. Re-measure after a bootloader update.",
     "fb": "OBSERVED 2026-10-26: the shim's console drew readable text across the panel at fb_base 0xfac00000, stride 4320, 1080x2400 (screen photos of the probe run; matches mainline gs101-oriole.dts:36-48, splash@fac00000, a8r8g8b8).",
