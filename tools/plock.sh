@@ -6,7 +6,7 @@ plock_take() {
 	local tool=$1 wait=${2:-0} tok
 	PLOCK_TOOK=0
 	tools/phone-lock check >/dev/null 2>&1 && return 0   # PHONE_LOCK_TOKEN from an outer `phone-lock run`
-	tok=$(cat /proc/sys/kernel/random/uuid)
+	tok=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen | tr A-Z a-z)   # uuidgen: macOS host
 	# pid-bound: the lock ends when this script dies, never by ttl; the ttl is only the figure shown to waiters
 	# shellcheck disable=SC2034  # PLOCK_MSG is read by the sourcing script (xrun, probe-run)
 	PLOCK_MSG=$(tools/phone-lock acquire --owner "${PHONE_OWNER:-$tool}" --wait "$wait" --ttl 7200 --pid $$ --pgid "$(ps -o pgid= -p $$ | tr -d " ")" --token "$tok" 2>&1 | head -n 2 | tr '\n' ' ')

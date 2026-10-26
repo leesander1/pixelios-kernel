@@ -1,0 +1,5 @@
+#!/bin/sh
+# Host-test compiler on an Apple-silicon Mac (put tools/macos first on PATH; tools/macos/env.sh does).
+# x86_64 under Rosetta, like the x86 Linux dev box: the shim sources pick their real AArch64 instructions (smc, mrs) under
+# __aarch64__, which would otherwise be defined on the host too and trap at EL0. -Wno-unknown-attributes: Apple clang lacks GCC's noipa.
+exec /usr/bin/clang -arch x86_64 -Wno-unknown-attributes "$@"

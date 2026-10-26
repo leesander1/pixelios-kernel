@@ -11,6 +11,7 @@ while [ $# -gt 0 ]; do case "$1" in
 	--max-age-min) flags+=(--max-age-min "$2"); shift 2 ;; *) img=$1; shift ;; esac; done
 [ -n "$exp" ] && [ -f "$img" ] || { echo "usage: $0 --expect KIND IMG" >&2; exit 2; }
 . tools/phone-target.sh
+. tools/hostcompat.sh
 phone_target || exit 2
 python3 -I tools/imgmeta.py check "$img" --expect "$exp" --board "$PHONE_TARGET" "${flags[@]}"
 tools/phone-lock check >&2 || { echo "REFUSED: the phone lock is not held by you (tools/phone-lock run --owner NAME -- CMD, or use tools/xrun / tools/probe-run, which take it after the build)" >&2; exit 1; }

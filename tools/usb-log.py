@@ -2,12 +2,15 @@
 """Host-side helper for the USB gadget serial log (stage 2, CDC-ACM).
 
 Subcommands:
-  wait     poll sysfs for the 1209:0001 gadget and print its tty node
+  wait     poll for the 1209:0001 gadget and print its tty node
   capture  tee the gadget's serial output to stdout and a log file
   extract  pass a file through unchanged (test helper)
 
 Python stdlib only: no pyserial, no root. The gadget must enumerate as
-CDC-ACM so the host sees /dev/ttyACM0 without extra drivers.
+CDC-ACM so the host sees it without extra drivers: Linux /dev/ttyACM0 (found
+through sysfs), macOS /dev/cu.usbmodem* (found through the IORegistry: the
+IOCalloutDevice of the IOSerialBSDClient below the 1209:0001 IOUSBHostDevice;
+read from Apple's IOSerialBSDClient keys, not yet observed with the shim gadget).
 """
 
 import argparse
@@ -15,9 +18,11 @@ import datetime
 import errno
 import fcntl
 import os
+import plistlib
 import select
 import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -34,8 +39,8 @@ READ_SIZE = 4096
 TIOCMBIS = getattr(termios, "TIOCMBIS", 0x5417)
 TIOCM_DTR = getattr(termios, "TIOCM_DTR", 0x002)
 
-# A disconnected serial device raises these or returns EOF; all mean gone.
-CLEAN_READ_ERRNOS = (errno.ENODEV, errno.EIO)
+# A disconnected serial device raises these or returns EOF; all mean gone (ENXIO: macOS cu.* after unplug).
+CLEAN_READ_ERRNOS = (errno.ENODEV, errno.EIO, errno.ENXIO)
 
 
 def _read_stripped(path):
@@ -75,10 +80,46 @@ def scan_once(sysfs):
     return None
 
 
+def callout_in(entry):
+    """first IOCalloutDevice (/dev/cu.*) in an IORegistry subtree, or None"""
+    path = entry.get("IOCalloutDevice")
+    if isinstance(path, str) and path.startswith("/dev/"):
+        return path
+    for child in entry.get("IORegistryEntryChildren", []):
+        found = callout_in(child)
+        if found:
+            return found
+    return None
+
+
+def scan_ioreg(devices):
+    """devices: the plist list of `ioreg -a -r -c IOUSBHostDevice`; the gadget's /dev/cu.* node or None"""
+    for dev in devices:
+        if dev.get("idVendor") == int(VID, 16) and dev.get("idProduct") == int(PID, 16):
+            node = callout_in(dev)
+            if node:
+                return node
+    return None
+
+
+def scan_macos():
+    try:
+        r = subprocess.run(["ioreg", "-a", "-r", "-c", "IOUSBHostDevice"], capture_output=True, timeout=5)
+        devices = plistlib.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
+    except (OSError, subprocess.TimeoutExpired, plistlib.InvalidFileException, ValueError):
+        return None
+    return scan_ioreg(devices)
+
+
+def use_ioreg(sysfs):
+    """macOS has no sysfs: an explicit --sysfs (tests) still reads that tree"""
+    return sys.platform == "darwin" and sysfs == DEFAULT_SYSFS
+
+
 def wait_for_tty(sysfs, timeout=DEFAULT_TIMEOUT, poll=DEFAULT_POLL):
     deadline = time.monotonic() + timeout
     while True:
-        node = scan_once(sysfs)
+        node = scan_macos() if use_ioreg(sysfs) else scan_once(sysfs)
         if node is not None:
             return node
         if time.monotonic() >= deadline:
@@ -246,9 +287,9 @@ def main(argv=None):
     node = wait_for_tty(args.sysfs, args.timeout, args.poll)
     if node is None:
         print("usb-log: timed out after %gs waiting for %s:%s under %s"
-              % (args.timeout, VID, PID, args.sysfs), file=sys.stderr)
+              % (args.timeout, VID, PID, "the IORegistry" if use_ioreg(args.sysfs) else args.sysfs), file=sys.stderr)
         return 2
-    dev = "/dev/" + os.path.basename(node)
+    dev = node if node.startswith("/dev/") else "/dev/" + os.path.basename(node)  # macOS: the node is already /dev/cu.*
     if args.command == "wait":
         print(dev)
         return 0

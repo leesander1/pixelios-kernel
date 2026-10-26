@@ -64,6 +64,41 @@ class ScanTests(UsbLogTest):
         self.assertEqual(rc, 2)
 
 
+def acm_device(vid=0x1209, pid=0x0001, callout="/dev/cu.usbmodem1101"):
+    """the shape of one `ioreg -a -r -c IOUSBHostDevice` entry for a CDC-ACM gadget (interface -> ACM data -> serial client)"""
+    serial = {"IOObjectClass": "IOSerialBSDClient", "IOCalloutDevice": callout, "IODialinDevice": callout.replace("/cu.", "/tty.")}
+    acm = {"IOObjectClass": "AppleUSBACMData", "IORegistryEntryChildren": [serial]}
+    iface = {"IOObjectClass": "IOUSBHostInterface", "IORegistryEntryChildren": [acm]}
+    return {"IOObjectClass": "IOUSBHostDevice", "idVendor": vid, "idProduct": pid, "IORegistryEntryChildren": [iface]}
+
+
+class IoregScanTests(unittest.TestCase):
+    def test_finds_the_gadget_callout_node(self):
+        other = acm_device(vid=0x18d1, pid=0x4ee0, callout="/dev/cu.other")
+        self.assertEqual(usb_log.scan_ioreg([other, acm_device()]), "/dev/cu.usbmodem1101")
+
+    def test_other_devices_and_no_serial_child_give_none(self):
+        bare = {"IOObjectClass": "IOUSBHostDevice", "idVendor": 0x1209, "idProduct": 0x0001, "IORegistryEntryChildren": []}
+        self.assertIsNone(usb_log.scan_ioreg([acm_device(pid=0x0002), bare]))
+        self.assertIsNone(usb_log.scan_ioreg([]))
+
+    def test_explicit_sysfs_never_uses_ioreg(self):
+        self.assertFalse(usb_log.use_ioreg("/tmp/fake-sysfs"))
+        self.assertEqual(usb_log.use_ioreg(usb_log.DEFAULT_SYSFS), sys.platform == "darwin")
+
+    def test_wait_prints_the_callout_path_unchanged(self):
+        orig = usb_log.use_ioreg, usb_log.scan_macos
+        usb_log.use_ioreg, usb_log.scan_macos = (lambda _s: True), (lambda: "/dev/cu.usbmodem1101")
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = usb_log.main(["wait"])
+        finally:
+            usb_log.use_ioreg, usb_log.scan_macos = orig
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue().strip(), "/dev/cu.usbmodem1101")
+
+
 class CaptureTests(UsbLogTest):
     def run_tool(self, *args, timeout=60):
         return subprocess.run(
@@ -135,7 +170,8 @@ class TailTests(UsbLogTest):
         self.addCleanup(os.close, slave)
         node = self.tmp / "node"
         node.write_text("x")
-        payload = b"".join(b"line %04d ................................\n" % i for i in range(60))
+        # 20 lines (~900 B): a macOS pty holds ~1 KiB unread (Linux 4 KiB), a bigger write blocks here before capture() runs
+        payload = b"".join(b"line %04d ................................\n" % i for i in range(20))
         os.write(master, payload)
         node.unlink()  # the device is gone, but its data is still queued in the tty
         old = usb_log.READ_SIZE

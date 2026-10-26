@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""usb-ids: the USB devices on the bus as `lsusb`-style lines ("Bus 000 Device 000: ID 18d1:4ee0"): ids only, no names, no serials.
+
+  tools/usb-ids              one line per device
+  tools/usb-ids --has VID    exit 0 if a device with vendor VID (hex, e.g. 18d1) is present, else 1
+
+Linux: /sys/bus/usb/devices/*/idVendor + idProduct. macOS: the IORegistry (`ioreg -a -r -c IOUSBHostDevice`, a plist; idVendor/idProduct
+are integers there). Used where `lsusb` is missing (phone-state, phone) and by probe-run for "is a Google device on the bus" (it replaced
+a /sys glob). Bus/Device numbers are always 000: no caller reads them. Test: tools/test_usb_ids.py.
+"""
+import os, plistlib, subprocess, sys
+
+SYSFS = "/sys/bus/usb/devices"
+
+
+def ids_sysfs(root=SYSFS):
+    out = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for n in names:
+        try:
+            with open(os.path.join(root, n, "idVendor")) as f:
+                v = f.read().strip().lower()
+            with open(os.path.join(root, n, "idProduct")) as f:
+                p = f.read().strip().lower()
+        except OSError:
+            continue
+        out.append((v, p))
+    return out
+
+
+def ioreg_devices():
+    """top-level IOUSBHostDevice dicts (each keeps its IORegistryEntryChildren subtree); [] if ioreg fails or times out"""
+    try:
+        r = subprocess.run(["ioreg", "-a", "-r", "-c", "IOUSBHostDevice"], capture_output=True, timeout=5)
+        return plistlib.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
+    except (OSError, subprocess.TimeoutExpired, plistlib.InvalidFileException, ValueError):
+        return []
+
+
+def ids_ioreg(devices):
+    return [("%04x" % d["idVendor"], "%04x" % d["idProduct"]) for d in devices
+            if isinstance(d.get("idVendor"), int) and isinstance(d.get("idProduct"), int)]
+
+
+def ids():
+    if sys.platform == "darwin":
+        return ids_ioreg(ioreg_devices())
+    return ids_sysfs()
+
+
+def main(argv):
+    if argv[:1] == ["--has"] and len(argv) == 2:
+        want = argv[1].lower()
+        return 0 if any(v == want for v, _ in ids()) else 1
+    if argv:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    for v, p in ids():
+        print("Bus 000 Device 000: ID %s:%s" % (v, p))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

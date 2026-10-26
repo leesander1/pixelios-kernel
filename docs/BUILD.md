@@ -41,3 +41,27 @@ The sweet v2 image uses the ignored stock DTB at
 `dtb/boot_unpacked/dtb`; set `SWEET_DTB` to another copy. The board table,
 generated C header, tool downloads, images, and private test key are not
 committed.
+
+## macOS host (Apple silicon)
+
+The shim, its host tests, the boot-safety audit and the phone tools also run on a Mac (*observed* 2026-10-26: shim builds for bluejay
+and oriole, `tools/check-all.sh` passes except the pre-existing patch-number gap; phone tools checked with stubs and with no phone
+attached, not yet with a phone). One-time setup:
+
+```sh
+brew install coreutils flock shellcheck
+brew install --cask android-platform-tools
+python3 -m venv .venv && .venv/bin/pip install lz4 cryptography
+# Arm GNU Toolchain 15.2.rel1, darwin-arm64, aarch64-none-elf, extracted under ~/.local/opt (check the published sha256)
+```
+
+Then, in each shell, `. tools/macos/env.sh` before `shim/build.sh`, `tools/check-all.sh` or the phone tools. It selects:
+
+- **GCC 15.2** for the shim. Homebrew's GCC 16 compiles it but fails the audit's self-tests (they pin GCC 15 code shapes).
+- **x86_64 host tests under Rosetta** (`tools/macos/gcc`): on an AArch64 host the shim's `__aarch64__` paths would run real `smc`/`mrs`
+  instructions and trap.
+- **GNU coreutils** first on `PATH` (`timeout`, `stat -c`, `sha256sum`).
+
+Host differences the phone tools handle themselves (`tools/hostcompat.sh`, `tools/usb-ids`): USB ids come from the IORegistry instead of
+sysfs/`lsusb`, and `tools/usb-log.py` finds the shim's CDC-ACM log as `/dev/cu.usbmodem*` (read from Apple's IOSerialBSDClient keys,
+*not yet observed* with the gadget). `xrun` is still Linux-only (sysfs, ESP camera, `ip`).

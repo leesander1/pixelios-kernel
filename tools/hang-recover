@@ -6,6 +6,7 @@
 # Prints one line per state change ("+12s recovery"). Last line: RESULT: PASS state=fastboot after Ns | FAIL still absent after Ns
 # (FAIL adds the button instruction). Exit 0 PASS / 1 FAIL / 2 ERROR (bad args, a phone that is not PIXOS_DEVICE (default bluejay)). Software only: no relay/reset.
 here=$(dirname "$(readlink -f "$0")")
+. "$here/hostcompat.sh"   # timeout on a macOS host
 POLL=${HR_POLL:-3}
 
 main() {
@@ -46,7 +47,7 @@ selftest() {
 	cat >"$d/lsusb" <<'S'
 #!/bin/bash
 n=$(cat "$HS_DIR/n" 2>/dev/null || echo 0); n=$((n+1)); echo $n >"$HS_DIR/n"
-read -ra a <<<"$HS_SEQ"; s=${a[$((n-1))]:-${a[-1]}}
+read -ra a <<<"$HS_SEQ"; s=${a[$((n-1))]:-${a[${#a[@]}-1]}}   # not ${a[-1]}: macOS /bin/bash is 3.2
 [ -e "$HS_DIR/fb" ] && s=fastboot
 echo "$s" >"$HS_DIR/cur"
 case $s in fastboot) echo "Bus 1 Device 5: ID 18d1:4ee0 Google" ;; recovery) echo "Bus 1 Device 5: ID 18d1:d001 Google" ;; esac
