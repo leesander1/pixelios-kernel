@@ -2,12 +2,12 @@
   "name": "Pixel 6",
   "codename": "oriole",
   "soc": "google/gs101",
-  "status": "scaffold: sourced values filled, DRAM/userdata/USB DMA still to measure (no hardware run yet)",
+  "status": "bring-up: shim probe observed on hardware 2026-10-26 (bootloader slider-17.0-15199431); no XNU boot yet",
   "dram_banks": [
     ["0x80000000", "0x80000000"],
-    ["0x880000000", "0x100000000"]
+    ["0x880000000", "0x180000000"]
   ],
-  "xnu_ram": ["0x880000000", "0x100000000"],
+  "xnu_ram": ["0x880000000", "0x180000000"],
   "fb_base": "0xfac00000",
   "fb_size": "0x9e3400",
   "fb_width": 1080,
@@ -19,6 +19,8 @@
     [2, "0x174E0000", "0x20", 3]
   ],
   "key_active_low": 1,
+  "userdata_mib": 112914,
+  "usb_dma_range": ["0xf8800000", "0x1000000"],
   "touch_chip_id": ["0x36", "0x48"],
   "touch_usi": 11,
   "touch_max_hz": 10000000,
@@ -32,11 +34,11 @@
   "touch_pin_reset": ["gpp26", 0],
   "touch_pin_mux": ["gpp26", 1],
   "notes": {
-    "dram_banks": "GUESS, conservative: a 4 GiB subset copied from bluejay (6 GiB phone). The Pixel 6 has 8 GiB, so the real high bank is larger; a subset only under-uses RAM. MEASURE with a probe run (the shim prints the live /memory banks) before trusting it.",
-    "xnu_ram": "GUESS: the same hole-free 4 GiB as bluejay, a subset of what an 8 GiB phone should have. Re-derive from the measured banks (must hold no carve-out, 32 MiB aligned).",
-    "userdata_mib": "NOT SET: depends on the storage size (128/256 GiB). MEASURE from the GPT (ufs-gpt-read) before any check-ios-root.py run; until then no iOS root may be built for oriole.",
-    "usb_dma_range": "NOT SET: bluejay's abl@f8800000 window was observed in its live FDT. MEASURE oriole's reserved-memory from the probe log; XNU patch 0082 refuses USB without it.",
-    "fb": "Read from source: mainline gs101-oriole.dts:36-48, splash@fac00000, 1080*2400*4 = 0x9E3400, stride 4320, a8r8g8b8 (docs/research/05-fact-check.md section 3a). Not yet observed on oriole.",
+    "dram_banks": "OBSERVED on the phone 2026-10-26 (hardware/probe-log-2026-10-26-run3.txt, FDT memory section): /memory banks 0x80000000, 0x880000000, 0x900000000, 0x980000000, 2 GiB each (8 GiB). The three high banks are contiguous and merged here (0x880000000..0xA00000000, 6 GiB); UFS MAP banks=4 rsv=0x1B agrees.",
+    "xnu_ram": "From the measured map (hardware/probe-log-2026-10-26-run3.txt): all 27 reserved ranges end at or below 0xFD900000, so the high range 0x880000000..0xA00000000 holds no carve-out; 32 MiB aligned. 2 GiB more than bluejay's 4 GiB: no XNU boot with 6 GiB has been tried yet.",
+    "userdata_mib": "OBSERVED 2026-10-26 (hardware/probe-log-2026-10-26-run3.txt): GPT userdata first=0x22F1E6 last=0x1DC03FA on LUN 0 (LUN 0 last LBA 0x1DC03FF, 4 KiB blocks: the 128 GB model) = 112914 MiB, identical to bluejay.",
+    "usb_dma_range": "OBSERVED 2026-10-26 (hardware/probe-log-2026-10-26-run3.txt): reserved-memory abl@f8800000, no-map, 16 MiB; ABL's DWC3 event buffer GEVNTADR 0xF8DEB000 lies inside it ('USB EVBUF in reserved abl@f8800000'). Same window as bluejay. Re-measure after a bootloader update.",
+    "fb": "OBSERVED 2026-10-26: the shim's console drew readable text across the panel at fb_base 0xfac00000, stride 4320, 1080x2400 (screen photos of the probe run; matches mainline gs101-oriole.dts:36-48, splash@fac00000, a8r8g8b8).",
     "key_pins": "Read from source: mainline gs101-pixel-common.dtsi:40-63 and :799-853 is the oriole/raven common file (docs/research/05-fact-check.md section 2): power gpa10-1 (0x174D0000, bank 0xE0), vol+ gpa8-1 and vol- gpa7-3 (0x174E0000, banks 0x40/0x20), all active low. Not yet observed on oriole.",
     "touch": "Read from source: Google kernel/devices/google/raviole@81506b991a5385be6c59ee27df4dda2b1379c507 (android-gs-raviole-6.1-android16) dts/gs101-oriole-touch.dtsi includes gs101/gs101-fts-touch.dtsi (the same shared file bluejay uses) and sets st,dchip_id <0x36 0x48>, st,max-coords <1079 2399>, panel samsung_s6e3fc3. Pins/USI/frequency come from the shared gs101-fts-touch.dtsi and gs101-common-touch.dtsi and are copied from bluejay; TODO(verify) that raviole does not override them before enabling touch."
   }

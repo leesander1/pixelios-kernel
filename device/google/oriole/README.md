@@ -1,6 +1,6 @@
 # Pixel 6 (oriole)
 
-SoC: `soc/google/gs101`. Status: scaffold, no hardware run yet.
+SoC: `soc/google/gs101`. Status: shim probe observed on hardware 2026-10-26 (`hardware/probe-log-2026-10-26-run3.txt`); no XNU boot yet.
 
 Captures from this device go in `hardware/`.
 
@@ -16,10 +16,11 @@ PIXOS_DEVICE=oriole tools/probe-run --build-args "..." --expect REGEX   # read-o
 
 `xrun` (XNU boot) and `fflash-userdata.sh` stay bluejay-only until oriole has a measured board definition.
 
-## What `board.json` still needs (measure, do not copy)
+## Measured (2026-10-26, bootloader slider-17.0-15199431)
 
-- `dram_banks` / `xnu_ram`: a conservative 4 GiB guess copied from bluejay (the Pixel 6 has 8 GiB). The probe log prints the live `/memory` banks.
-- `usb_dma_range`: the bootloader's DWC3 event-buffer carve-out (`abl@...` in the live FDT); `tools/pix check oriole` fails until it is set.
-- `userdata_mib`: from the GPT read; depends on the 128/256 GiB model.
+- 8 GiB in four 2 GiB banks; the high 6 GiB (0x880000000..0xA00000000) holds no reserved range: `xnu_ram`.
+- `usb_dma_range` abl@f8800000 16 MiB (event buffer inside), `userdata_mib` 112914: both identical to bluejay.
+- UFS cold re-init reaches HS-G4; all 8 CPUs report; the console draws on the panel at 0xfac00000.
 
-Sourced (read from source, not yet observed on oriole): framebuffer, key pins, touch (see `notes` in `board.json`).
+Still from source only: key pins and touch (see `notes` in `board.json`). `xrun`, `build-xnu-image.sh` and `mkpayload.py` are
+bluejay-only, so no XNU image is built for oriole yet.
