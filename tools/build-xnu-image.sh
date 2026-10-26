@@ -52,7 +52,7 @@ elif [ -n "$dvfs" ]; then words="${words:+$words,}dvfs"; dvfsarg=(--dvfs "$dvfs"
 p=$(mktemp /tmp/payload.XXXXXX.bin); ov=""; rdarg=(); trap 'rm -f "$p" "$ov"' EXIT
 if [ -n "$overlay" ]; then ov=$(mktemp /tmp/devoverlay.XXXXXX.bin); python3 -I tools/mkdevoverlay.py "$overlay" "$ov" >&2 || exit 2; rdarg=(--ramdisk "$ov"); fi
 [ -z "${XNU_IMAGE_ARGS_ONLY:-}" ] || { echo "boot-args: $args"; exit 0; }   # test hook (tools/test_build_overlay_args.py)
-python3 -I tools/mkpayload.py "$kernel" "$adt" "$p" --board "$board" --cmdline "$args" "${rdarg[@]}" ${wlanfw:+--wlanfw "$wlanfw"} >/dev/null
-META_ARGS="$args" XNU_UFS=1 shim/build.sh --board "$board" --avb --boot-xnu "$p" "${railsarg[@]}" "${dvfsarg[@]}" "${hoarg[@]}" >/dev/null
+python3 -I tools/mkpayload.py "$kernel" "$adt" "$p" --board "$board" --cmdline "$args" ${rdarg[@]+"${rdarg[@]}"} ${wlanfw:+--wlanfw "$wlanfw"} >/dev/null
+META_ARGS="$args" XNU_UFS=1 shim/build.sh --board "$board" --avb --boot-xnu "$p" ${railsarg[@]+"${railsarg[@]}"} ${dvfsarg[@]+"${dvfsarg[@]}"} ${hoarg[@]+"${hoarg[@]}"} >/dev/null   # ${a[@]+...}: an empty array is "unbound" under set -u in bash 3.2 (macOS)
 [ -z "$out" ] || cp shim/out/shim-boot-avb.img "$out"
 echo "boot-args: $args"; echo "image: ${out:-shim/out/shim-boot-avb.img}"
