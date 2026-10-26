@@ -10,7 +10,7 @@ Python stdlib only: no pyserial, no root. The gadget must enumerate as
 CDC-ACM so the host sees it without extra drivers: Linux /dev/ttyACM0 (found
 through sysfs), macOS /dev/cu.usbmodem* (found through the IORegistry: the
 IOCalloutDevice of the IOSerialBSDClient below the 1209:0001 IOUSBHostDevice;
-read from Apple's IOSerialBSDClient keys, not yet observed with the shim gadget).
+the gadget enumerated as /dev/cu.usbmodem00011 on 2026-10-26).
 """
 
 import argparse
@@ -93,7 +93,7 @@ def callout_in(entry):
 
 
 def scan_ioreg(devices):
-    """devices: the plist list of `ioreg -a -r -c IOUSBHostDevice`; the gadget's /dev/cu.* node or None"""
+    """devices: the plist list of `ioreg -a -l -r -c IOUSBHostDevice`; the gadget's /dev/cu.* node or None"""
     for dev in devices:
         if dev.get("idVendor") == int(VID, 16) and dev.get("idProduct") == int(PID, 16):
             node = callout_in(dev)
@@ -104,7 +104,8 @@ def scan_ioreg(devices):
 
 def scan_macos():
     try:
-        r = subprocess.run(["ioreg", "-a", "-r", "-c", "IOUSBHostDevice"], capture_output=True, timeout=5)
+        # -l: without it ioreg lists the child objects but not their properties, so IOCalloutDevice is missing (observed 2026-10-26)
+        r = subprocess.run(["ioreg", "-a", "-l", "-r", "-c", "IOUSBHostDevice"], capture_output=True, timeout=5)
         devices = plistlib.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
     except (OSError, subprocess.TimeoutExpired, plistlib.InvalidFileException, ValueError):
         return None
