@@ -1,0 +1,22 @@
+Pixel 6 (oriole): raised CPU clocks (boot 7) and the crash-loop overlay (boot 8), 2026-10-27
+
+Both: xrun --board oriole --no-camera --gui --touch --cpus 8 --duration 900 --restart 960,bootloader
+      --dvfs 1803000,1836000,1826000 (shim ACPM DVFS request: CPUCL0/1/2 to the soc.json ceilings, the rates bluejay ran in dvfs4-all)
+      kernel xnu-04457e5 sha256 26d6679ce244...; same flashed root as boots 5-6
+Boot 7: label oriole-boot7-dvfs, pixelios-kernel a298e18
+Boot 8: label oriole-boot8, plus --overlay (System/Library/xpc/launchd.plist from the root build with pixelios-userland f363555:
+        com.apple.bluetoothd, com.apple.bluetoothuserd and the AegirPoster extension removed; every other entry unchanged) and
+        --args "sweetiolog=- sweetsample=-"
+
+Results (xrun reports): both RESULT: PASS, no panic, ended by the host at +900 s, software reset, phone back in fastboot.
+
+Observed:
+- Boot 7: the person at the phone found the UI "about the same" as boot 6 with the CPU clocks raised: the lag is the CPU renderer
+  (no GPU), not the CPU clock. The kernel's clock-probe lines (patch 0096, printed at CPU bring-up) are not in the USB log, which
+  replays only the last 64 KiB from before the link: the raised rates are requested but not measured on oriole.
+- Boot 8: bluetoothd and AegirPoster exec 0 times (boot 7: 79 and 72; boot 6: 73 and 90); no AegirPoster crash. The lock screen
+  still draws and unlocks; touch works (52 events). The overlay stays in the root (undo: overlay the original launchd.plist).
+- Boot 8 log starts early (the Mac's address is now set by macOS as soon as the link appears), so the touch bring-up is in it:
+  TS_SPI_SEL not driven by the AP -> sweettouchmux=1 drives it low; USI11 -> SPI mode; reset pulse -> controller-ready event
+  (03 00 ...); identify reg 0x20000000 = 36 48 03 00 (want 36 48) -> FTM5 answers; scanning 1080x2400.
+- Only crash left in boot 8: driverkitd 1x SIGKILL.
