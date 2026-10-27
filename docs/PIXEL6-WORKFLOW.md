@@ -87,7 +87,13 @@ Wi-Fi link test and XNU attach). After run 7 the phone needs a Power+VolDown hol
 | Lag | the kernel copies every frame to the panel with the CPU: 11-25 ms per frame (patch 0145 timing) | **page flip** (user's choice): research done so far below; next = the staged read-only dump (0147, `sweetdpudump=7`), then the flip |
 | Wi-Fi (BCM4389) | link chain S00-S34 ran on oriole, chip id 0x10034389; firmware extracted (`tools/extract-wlanfw.sh`, from the Android 12 factory zip) | `device/google/oriole/batch-wlan2.sh`: A = `--wlan-link=36` with 1200 s, B = XNU read-only attach + container check (level 2); C (`RUN_C=1`, ask the user first) = level 5 chip RAM writes. Level 6 (start the chip): the pin is per board since xnu 0148 (ADT `/sweet-wlan` `board`; oriole 1607051 B, crc32 0x54b872bf). Note: the glue mutant 'CFG clause kept as a string needle' fails to compile under macOS clang (pre-existing; run the mutants on Linux for a clean result) |
 | Bluetooth | surveyed (`docs/research/45-bluetooth-survey-oriole.md`): BCM4389 BT = HCI over USI16 UART `0x175B0000`, pins gpp16-2/gpp14-3/gpa6-6; iOS wants `/dev/uart.bluetooth` + `/dev/bt*` + BlueTool | `BCM.hcd` extracted (B0 done); next the shim UART/HCI_Reset probe (B1/B2) |
-| Camera | not started | - |
+| Brightness | not started: stuck at the bootloader's level; design in `docs/research/46-panel-brightness-oriole.md` (DCS 0x51 `51 HI LO`, 4..4095, via DSIM0 0x1C2C0000) | L1 read-only DSIM dump, then `sweetbright=N` |
+| Buttons | power key works (SWEET KEYS events on oriole); volume keys: driver loads (xnu 0087), never pressed in a run yet | press volume up/down in a run and check `SWEET KEYS: key=1/2` |
+| Battery | the 100 % is a static value: xnu 0061 is the Xiaomi (Qualcomm SPMI) driver, real only with `sweetbattery=1` on that PMIC; the Pixel 6 fuel gauge is a different chip | survey the oriole fuel gauge (I2C) |
+| Vibration | not started (Cirrus haptics amp on I2C + its firmware from the factory image) | survey |
+| Audio, sensors | not started; behind the AOC co-processor (aoc@0x94000000) and its firmware/IPC | large |
+| Camera | not started (Google ISP stack) | last |
+| Cellular | out of scope (modem firmware, carrier stack) | - |
 
 ### Page flip research so far (sources in `~/pixelios-artifacts/refs/`, outside git)
 
