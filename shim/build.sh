@@ -575,6 +575,9 @@ else
 	# patch 0154 (run E: the CA7 release, the shared-area poll, the CA7 back into reset) on top of the text after 0148
 	awk '/^diff --git a\/bsd\/dev\/sweet_wlan_wr.h /{on=1;print;next} on&&/^diff --git /{exit} on{print}' ../xnu/patches/0154-sweet-wlan-ca7-release.patch > $O/sweet_wlan_wr.0154.diff
 	patch -s -p1 -d $O/wrp < $O/sweet_wlan_wr.0154.diff || { echo "FAIL patch 0154 does not apply to sweet_wlan_wr.h" >&2; exit 1; }
+	# patch 0155 (the firmware console read, reads only) on top of the text after 0154
+	awk '/^diff --git a\/bsd\/dev\/sweet_wlan_wr.h /{on=1;print;next} on&&/^diff --git /{exit} on{print}' ../xnu/patches/0155-sweet-wlan-fw-console.patch > $O/sweet_wlan_wr.0155.diff
+	patch -s -p1 -d $O/wrp < $O/sweet_wlan_wr.0155.diff || { echo "FAIL patch 0155 does not apply to sweet_wlan_wr.h" >&2; exit 1; }
 	cp $O/wrp/bsd/dev/sweet_wlan_wr.h $O/sweet_wlan_wr.h
 	chk "wlan_wr_host_test (compile)" gcc -O1 -Wall -Wextra -Werror -I$O -o $O/wlan_wr_host_test wlan_wr_host_test.c
 	chk "wlan_wr_host_test" $O/wlan_wr_host_test

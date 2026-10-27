@@ -1,0 +1,120 @@
+SWEET WLAN level 7 firmware console (patch 0155, reads only). Once W16 has seen the shared-area address, the firmware runs 1 s longer, then the hnd_cons_t at shared word 5 (console_addr) is read as brcmfmac does (pcie.c:828-891: buffer address +8, size +12, write index +16) and the bytes 0..write index are printed as "SWEET WLAN: FW <line>" (CR dropped, lines cut at 120 characters, other non-printable bytes as '.'), then W17 as before.
+Only under BAR2 window 0 after cfg 0x84 is back at 0: a console or buffer not entirely inside RAM below 0x400000, a size of 0 or above 64 KiB, or a write index beyond the size is logged and not read. No new store, no new tuple, no glue change.
+Tests: shim/wlan_wr_host_test.c rune() console cases, tools/test_wlan_wr_mutants.py.
+
+diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
+--- a/bsd/dev/sweet_wlan_wr.h
++++ b/bsd/dev/sweet_wlan_wr.h
+@@ -12,7 +12,7 @@
+  * Run B (patch 0130, sweetwlan=4) copies the image; run C (patch 0131, sweetwlan=5) stores the NVRAM text, the length token and the rTLV below ram_end (rows W11..W13). The words of run C come
+  * from the state (swl_tw_word), not from the caller, and their addresses from ram_end and varsize (swl_geo_get): swl_wr() recomputes both for every store.
+  * Run E (patch 0154, sweetwlan=7) releases the CA7 from CPUHALT after W14 (row W15), polls the last RAM word for the firmware's shared-area address (W16, reads only) and puts the ARM back into
+- * reset (W17): the firmware runs for at most SWW_SH_POLLS * SWW_SH_US.
++ * reset (W17): the firmware runs for at most SWW_SH_POLLS * SWW_SH_US (plus SWW_CON_US once the address is seen, patch 0155, which also reads the firmware's console).
+  *
+  * swl_wr() checks, in this order: not stopped, tuple exists (space, window, offset, value), run <= level - 2, tuple not consumed,
+  * predecessor done, phase flags set, bank rule state, the 0124 preconditions re-read (link L0, ATU r0/r1/r2, EP Command, BAR0),
+@@ -95,6 +95,13 @@
+ #define SWW_SH_POLLS    100u            /* run E: the shared-area poll, BRCMF_PCIE_FW_UP_TIMEOUT 5000 ms in 50 ms steps (brcmfmac-pcie.c:113, 1740-1768; DHD: 5 s, dhd_pcie.c:13641-13651) */
+ #define SWW_SH_US       50000u
+ #define SWW_SH_WORDS    16u             /* words of pciedev_shared_t logged raw (the layout is research 37 U13, not decoded here) */
++#define SWW_SH_CONSOLE  5u              /* patch 0155: shared word 5 = console_addr (BRCMF_SHARED_CONSOLE_ADDR_OFFSET 20, brcmfmac pcie.c:226) */
++#define SWW_CON_BUF     8u              /* hnd_cons_t: buffer address, size, write index (BRCMF_CONSOLE_BUFADDR/BUFSIZE/WRITEIDX_OFFSET, pcie.c:248-250) */
++#define SWW_CON_SIZE    12u
++#define SWW_CON_IDX     16u
++#define SWW_CON_MAX     0x10000u        /* the largest console buffer read (a bound of ours, not a firmware value) */
++#define SWW_CON_LINE    120u            /* a log line longer than this is cut into pieces (brcmfmac: sizeof log_str - 2, pcie.c:886-890) */
++#define SWW_CON_US      1000000u        /* the firmware runs this much longer after the shared area appears, so its boot log is complete [guess on the length needed] */
+ #define SWW_CORE_PCIE2  0x83c           /* PCIE2_CORE_ID, include_hndsoc.h:200; the core whose rev is DHD's buscorerev */
+ _Static_assert(SWW_FW_LEN == SWW_IMG_MAX, "the pinned firmware is the largest accepted image");
+ _Static_assert(SWW_FW_LEN_ORIOLE <= SWW_IMG_MAX, "every pinned firmware fits the image bound");
+@@ -357,6 +364,7 @@
+ 	uint32_t pin_len, pin_crc;                      /* patch 0148: the board's pinned FW identity (swl_fw_pin_for); 0 = unknown board, level 6 refused */
+ 	uint32_t sh_addr, sh_polls, sh_n;               /* run E: the shared-area address (0 = none seen), reads made, words logged */
+ 	uint32_t sh[SWW_SH_WORDS];
++	uint32_t con_buf, con_size, con_idx, con_lines;         /* patch 0155: the firmware console (hnd_cons_t) as read, lines printed */
+ };
+ 
+ static inline const char *
+@@ -1465,7 +1473,63 @@
+ 		}
+ 		SWW_RD(x, SWW_BAR2, win, a - win, x->sh[x->sh_n]);
+ 		x->sh_n++;
++	}
++	return 0;
++}
++
++/* W16 console (patch 0155, reads only): the firmware's log ring, read as brcmfmac brcmf_pcie_bus_console_init/_read do (pcie.c:828-891): the hnd_cons_t at console_addr gives the buffer,
++ * its size and the write index; the bytes 0..write index are printed as "SWEET WLAN: FW <line>" (CR dropped, a line cut at SWW_CON_LINE, other non-printable bytes as '.'). Only under BAR2
++ * window 0 (cfg 0x84 back at 0): a console or buffer that is not entirely inside RAM below 0x400000 is logged and not read. A wrapped ring shows only its newest part (as brcmfmac from 0). */
++static inline int
++swl_con(struct swl_wx *x)
++{
++	uint32_t c, end = SWW_RAM_BASE + x->ram_bytes, lim, i, w = 0, ch;
++	char line[SWW_CON_LINE + 1u];
++	unsigned n = 0;
++
++	if (x->sh_n <= SWW_SH_CONSOLE || x->sh[SWW_SH_CONSOLE] == 0) {
++		return 0;
++	}
++	c = x->sh[SWW_SH_CONSOLE];
++	lim = end < SWW_TCM_BYTES ? end : SWW_TCM_BYTES;
++	if (c < SWW_RAM_BASE || (c & 3u) != 0 || c >= lim || lim - c < SWW_CON_IDX + 4u) {
++		printf("SWEET WLAN: W16 console at %#010x not read (not inside RAM below %#x)\n", c, lim);
++		return 0;
++	}
++	SWW_RD(x, SWW_BAR2, 0, c + SWW_CON_BUF, x->con_buf);
++	SWW_RD(x, SWW_BAR2, 0, c + SWW_CON_SIZE, x->con_size);
++	SWW_RD(x, SWW_BAR2, 0, c + SWW_CON_IDX, x->con_idx);
++	printf("SWEET WLAN: W16 console at %#010x: buffer %#010x size %u write index %u\n", c, x->con_buf, x->con_size, x->con_idx);
++	if (x->con_buf < SWW_RAM_BASE || (x->con_buf & 3u) != 0 || x->con_size == 0 || x->con_size > SWW_CON_MAX || x->con_buf >= lim || lim - x->con_buf < x->con_size ||
++	    x->con_idx > x->con_size) {
++		printf("SWEET WLAN: W16 console buffer not read (outside RAM below %#x, size above %#x or index beyond the size)\n", lim, SWW_CON_MAX);
++		return 0;
+ 	}
++	for (i = 0; i < x->con_idx; i++) {
++		if ((i & 3u) == 0) {
++			SWW_RD(x, SWW_BAR2, 0, x->con_buf + i, w);
++		}
++		ch = (w >> (8u * (i & 3u))) & 0xFFu;
++		if (ch == '\r') {
++			continue;
++		}
++		if (ch == '\n' || n == SWW_CON_LINE) {
++			line[n] = 0;
++			printf("SWEET WLAN: FW %s\n", line);
++			x->con_lines++;
++			n = 0;
++			if (ch == '\n') {
++				continue;
++			}
++		}
++		line[n++] = (ch >= 0x20u && ch < 0x7Fu) ? (char)ch : '.';
++	}
++	if (n != 0) {
++		line[n] = 0;
++		printf("SWEET WLAN: FW %s\n", line);
++		x->con_lines++;
++	}
++	printf("SWEET WLAN: W16 console %u bytes, %u lines\n", x->con_idx, x->con_lines);
+ 	return 0;
+ }
+ 
+@@ -1495,6 +1559,7 @@
+ 		}
+ 		if (v != x->tok && v >= SWW_RAM_BASE && v < end - 4u && (v & 3u) == 0) {
+ 			x->sh_addr = v;
++			swl_delay(x, SWW_CON_US);      /* patch 0155: let the firmware finish its boot log before the console is read */
+ 			break;
+ 		}
+ 		if (i + 1u < SWW_SH_POLLS) {
+@@ -1508,6 +1573,9 @@
+ 	if (x->sh_addr != 0 && x->sh_addr < SWW_WIN_TAIL) {
+ 		SWW_TRY(swl_sh_read(x, 0));
+ 	}
++	if (x->sh_addr != 0) {
++		SWW_TRY(swl_con(x));
++	}
+ 	if (x->sh_addr == 0) {
+ 		printf("SWEET WLAN: W16 no shared-area address after %u reads (last RAM word %#010x, token %#010x)\n", x->sh_polls, v, x->tok);
+ 	} else {

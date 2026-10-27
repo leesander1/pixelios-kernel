@@ -27,6 +27,7 @@ PATCH0131 = os.path.join(ROOT, "xnu", "patches", "0131-sweet-wlan-nvram-rtlv.pat
 PATCH0132 = os.path.join(ROOT, "xnu", "patches", "0132-sweet-wlan-reset-vector.patch")
 PATCH0148 = os.path.join(ROOT, "xnu", "patches", "0148-sweet-wlan-fw-pin-per-board.patch")
 PATCH0154 = os.path.join(ROOT, "xnu", "patches", "0154-sweet-wlan-ca7-release.patch")
+PATCH0155 = os.path.join(ROOT, "xnu", "patches", "0155-sweet-wlan-fw-console.patch")
 TEST = os.path.join(ROOT, "shim", "wlan_wr_host_test.c")
 TEST_NV = os.path.join(ROOT, "shim", "wlan_nv_host_test.c")
 HDR_PATH = "bsd/dev/sweet_wlan_wr.h"
@@ -65,7 +66,7 @@ def apply_chain(path, patches):
 
 
 def final_header():
-    return apply_chain(HDR_PATH, (PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148, PATCH0154))
+    return apply_chain(HDR_PATH, (PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148, PATCH0154, PATCH0155))
 
 
 def glue_before():
@@ -642,6 +643,19 @@ MUTANTS = [
     ("run E W17: reset not asserted", [("\tSWW_TRY(swl_wr(x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_CTL, 1u));\n\tswl_delay(x, 10);", "\tswl_delay(x, 10);")], None),
     ("run E stage: W15 at level 6", [("if (x->level >= SWW_LEVEL0 + 5) {\n\t\trc = rc ? rc : swl_w15(x);", "if (x->level >= SWW_LEVEL0 + 4) {\n\t\trc = rc ? rc : swl_w15(x);")], None),
     ("run E stage: W17 skipped", [("\t\trc = rc ? rc : swl_w17(x);\n", "")], None),
+    # --- patch 0155: the firmware console (reads only)
+    ("console: size not bounded", [("|| x->con_size > SWW_CON_MAX ", "")], None),
+    ("console: index beyond the size accepted", [(" ||\n\t    x->con_idx > x->con_size) {", ") {")], None),
+    ("console: buffer end not bounded", [("|| lim - x->con_buf < x->con_size ||", "||")], None),
+    ("console: unaligned buffer accepted", [("|| (x->con_buf & 3u) != 0 || x->con_size == 0", "|| x->con_size == 0")], None),
+    ("console: header end not bounded", [("|| lim - c < SWW_CON_IDX + 4u) {", ") {")], None),
+    ("console: above window 0 accepted", [("lim = end < SWW_TCM_BYTES ? end : SWW_TCM_BYTES;", "lim = end;")], None),
+    ("console: CR kept", [("\t\tif (ch == '\\r') {\n\t\t\tcontinue;\n\t\t}\n", "")], None),
+    ("console: control bytes printed raw", [("(ch >= 0x20u && ch < 0x7Fu) ? (char)ch : '.'", "(char)ch")], None),
+    ("console: no line cut", [("if (ch == '\\n' || n == SWW_CON_LINE) {", "if (ch == '\\n') {")], None),
+    ("console: last partial line dropped", [("\tif (n != 0) {\n\t\tline[n] = 0;", "\tif (0) {\n\t\tline[n] = 0;")], None),
+    ("console: no extra time for the firmware", [("\t\t\tswl_delay(x, SWW_CON_US);", "")], None),
+    ("console: not read", [("\tif (x->sh_addr != 0) {\n\t\tSWW_TRY(swl_con(x));", "\tif (0) {\n\t\tSWW_TRY(swl_con(x));")], None),
     ("run E stage: final line shared address", [("x->level, x->sh_addr, x->sh_polls, x->sh_n,", "x->level, 0u, x->sh_polls, x->sh_n,")], None),
 ]
 

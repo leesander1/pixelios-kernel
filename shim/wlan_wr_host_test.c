@@ -2292,6 +2292,54 @@ static void rune(void)
 	f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = last - 8u;
 	CHECK(re_run(&x) == 0 && x.sh_addr == last - 8u && x.sh_n == 3 && !f.running);
 
+	/* patch 0155: the firmware console (hnd_cons_t at shared word 5): buffer, size, write index; bytes 0..index printed as lines, CR dropped, other control bytes as '.' */
+	{
+		static const char txt[] = "hello\r\nfirmware 1.2\x01\nab";
+		uint32_t sh = 0x003f0000u, con = 0x003e0000u, buf = 0x003d0000u, nb = (uint32_t)sizeof txt - 1u;
+
+		re_put(&f, &x);
+		f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = sh;
+		ramarr[sh / 4 + SWW_SH_CONSOLE] = con;
+		ramarr[con / 4 + 2] = buf; ramarr[con / 4 + 3] = 64; ramarr[con / 4 + 4] = nb;
+		for (i = 0; i < 16; i++) ramarr[buf / 4 + i] = 0;
+		for (i = 0; i < nb; i++) ramarr[buf / 4 + i / 4] |= (uint32_t)(uint8_t)txt[i] << (8 * (i % 4));
+		ramarr[buf / 4 + 15] = 0x41414141u;                    /* beyond the write index: not printed */
+		k = (uint32_t)f.clock_us;
+		CHECK(re_run(&x) == 0 && x.flags == ELEVEL7 && !f.running && x.con_buf == buf && x.con_size == 64 && x.con_idx == nb && x.con_lines == 3);
+		CHECK(strstr(logbuf, "SWEET WLAN: W16 console at 0x003e0000: buffer 0x003d0000 size 64 write index 23\n") != 0 && strstr(logbuf, "SWEET WLAN: FW hello\n") != 0);
+		CHECK(strstr(logbuf, "SWEET WLAN: FW firmware 1.2.\n") != 0 && strstr(logbuf, "SWEET WLAN: FW ab\n") != 0 && strstr(logbuf, "AAAA") == 0 && strstr(logbuf, "W16 console 23 bytes, 3 lines") != 0);
+		CHECK(f.clock_us - k >= SWW_CON_US);                      /* the firmware got its extra second */
+		/* a line longer than SWW_CON_LINE is cut */
+		re_put(&f, &x);
+		f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = sh;
+		ramarr[sh / 4 + SWW_SH_CONSOLE] = con;
+		ramarr[con / 4 + 2] = buf; ramarr[con / 4 + 3] = 256; ramarr[con / 4 + 4] = 130;
+		for (i = 0; i < 64; i++) ramarr[buf / 4 + i] = 0x78787878u;
+		CHECK(re_run(&x) == 0 && x.con_lines == 2 && strstr(logbuf, "FW xxxxxxxxxx\n") != 0);
+		/* refused shapes: read nothing past the header, still a success, the ARM back in reset */
+		{
+			static const uint32_t bb[][3] = { { 0x003d0000u, 0, 0 }, { 0x003d0000u, SWW_CON_MAX + 4u, 4 }, { 0x003d0000u, 64, 65 }, { 0x003d0002u, 64, 4 }, { 0x001ffff0u, 64, 4 },
+			                                  { 0x003ffff0u, 64, 4 }, { 0x0049f000u, 64, 4 } };
+			for (k = 0; k < sizeof bb / sizeof bb[0]; k++) {
+				re_put(&f, &x);
+				f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = sh;
+				ramarr[sh / 4 + SWW_SH_CONSOLE] = con;
+				ramarr[con / 4 + 2] = bb[k][0]; ramarr[con / 4 + 3] = bb[k][1]; ramarr[con / 4 + 4] = bb[k][2];
+				CHECK(re_run(&x) == 0 && x.con_lines == 0 && !f.running && strstr(logbuf, "W16 console buffer not read") != 0 && strstr(logbuf, "SWEET WLAN: FW ") == 0);
+			}
+		}
+		/* a console address outside RAM below 0x400000: not read at all */
+		{
+			static const uint32_t ca[] = { 0x001ffff0u, 0x003e0002u, 0x003ffff0u, 0x00400000u, 0x0049a000u };
+			for (k = 0; k < sizeof ca / sizeof ca[0]; k++) {
+				re_put(&f, &x);
+				f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = sh;
+				ramarr[sh / 4 + SWW_SH_CONSOLE] = ca[k];
+				CHECK(re_run(&x) == 0 && x.con_buf == 0 && !f.running && strstr(logbuf, "not read (not inside RAM below 0x400000)") != 0);
+			}
+		}
+	}
+
 	/* values that are not an address: the poll goes on to the timeout, then the ARM goes back into reset (a timeout is a result) */
 	{
 		static const uint32_t bad[] = { 0, 0x001ffffcu, 0x0049a002u, 0x0049fffcu, 0x004a0000u, 0x7fffffffu };
