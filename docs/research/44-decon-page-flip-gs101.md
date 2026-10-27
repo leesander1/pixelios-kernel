@@ -37,6 +37,15 @@ until the bit clears (the driver polls it: `decon_reg_wait_update_done*` [guess 
 The 0146 dump at AppleCLCD start stalled the bus [obs eagl7: no USB log, sweetrestart never fired]. 0147 dumps only at swap 600 with a log line and
 100 ms before each block, masked: 1 DECON / 2 windows / 4 RDMA / 8 SysMMU global / 16 SysMMU VM. First run `sweetdpudump=7`.
 
+## 0.4 Dump results (run dpu2, 2026-10-27, xnu 0147 mask 0x27) [obs]
+
+DECON0 `GLOBAL_CON` 0x133 (command mode), `TRIG_CON` 0x3061, `SHD_REG_UP_REQ` 0. Only **window 5** is enabled, channel map 0 = **DPP L0**.
+RDMA L0: `RDMA_ENABLE` 0x40000000, `IN_CTRL_0` 0xff400000, `SRC_SIZE` = `IMG_SIZE` 0x09600438 (2400 x 1080), `SRC_OFFSET` 0,
+`BASEADDR_Y8` = shadow = **0xFAC00000** (the boot framebuffer's physical address), `SRC_STRIDE_1` 0 (stride field 0; how the RDMA derives
+4320 then is to be read from dpp_reg.c). L1-L5 unused. U2 closed. U1 (SysMMU) still open: mask 8/16 not read; after this run the SysMMU
+read is the main suspect for run 7's hang, so it gets its own run, or is replaced by the reversible flip test (a base address outside the
+splash: picture = bypass, fault/garbage = translated; restore 0xFAC00000 right after).
+
 ## 1. The decision the dump makes
 
 | Dump shows | Meaning | Design |
@@ -76,7 +85,7 @@ then work. Larger job; only if the dump shows the SysMMU on.
 ## 4. Unknowns
 
 - U1: SysMMU state at handoff (dump bit 8/16).
-- U2: which RDMA layer and window scan out (dump bits 2/4).
+- U2: closed: window 5 / DPP L0 / base 0xFAC00000 (0.4).
 - U3: closed: no native size (UIKit); the DPP crops 1125x2436 -> 1080x2400 with SRC_OFFSET (22, 18).
 - U4: memory for design A. XNU owns only the high bank (board.json `xnu_ram` 0x880000000 + 4 GB; `gPhysBase=0x880000000` in the SweetMali
   log), so ordinary contiguous IOSurfaces are above 4 GB and a 32-bit `BASEADDR_Y8` in bypass mode cannot reach them: design A needs a
