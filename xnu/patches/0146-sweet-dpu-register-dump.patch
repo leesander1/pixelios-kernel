@@ -1,0 +1,96 @@
+SWEET display pipeline register dump (patch 0146, boot-arg sweetdpudump=1, default off): READ-ONLY dump of DECON0 (GLOBAL_CON, TRIG_CON, SHD_REG_UP_REQ), the enabled windows and their channel map, the six DPP RDMA layers (enable, sizes, base address, shadow base address, stride) and the three DPU SysMMUs (CTRL, CFG, page-table base, VM 0), at AppleCLCD start and at the 600th swap: the facts the page-flip design needs. No register is written.
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -197,6 +197,74 @@
+ };
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
++
++/*
++ * Patch 0146 (boot-arg sweetdpudump=1, default off): READ-ONLY dump of the gs101 display pipeline, for the page-flip work
++ * (docs/PIXEL6-WORKFLOW.md section 5): which DECON window and DPP layer scan out, at which device address and stride, and whether
++ * the DPU SysMMUs translate (that decides contiguous buffers versus page tables). Printed when AppleCLCD starts and again at the
++ * 600th swap (CoreAnimation running). No register is written. Sources (kernel/google-modules/display @ android-gs-raviole-5.10-
++ * android13-qpr3 3373c1b8, samsung/cal_9845; kernel/gs @ same branch 6e771b23, arch/arm64/boot/dts/google/gs101-drm-dpu.dtsi and
++ * gs101-sysmmu.dtsi, drivers/iommu/samsung-iommu.[ch]):
++ *   DECON0_MAIN 0x1C300000: GLOBAL_CON 0x20, TRIG_CON 0x30, SHD_REG_UP_REQ 0x50, shadow copies at +0x800 (regs-decon.h)
++ *   DECON_WIN 0x1C310000, DECON0_WINCON 0x1C330000 (dtsi reg-names win / wincon): per window 0x1000; WINCON word 0 = enable bit 0,
++ *     channel map bits 6:4 (DECON_CON_WIN, WIN_CHMAP); WIN words 0x0-0x1C (decon_reg.c dumps 0x20 per window)
++ *   DPU_DMA RDMA L0-L5 0x1C0B0000 + 0x1000*n: RDMA_ENABLE 0x0, IN_CTRL_0 0x8, SRC_SIZE 0x10, SRC_OFFSET 0x14, IMG_SIZE 0x18,
++ *     BASEADDR_Y8 0x40, SRC_STRIDE_1 0x54 (stride 0 in bits 15:0, dpp_reg.c), shadow BASEADDR_Y8 0x440 (DMA_SHD_OFFSET 0x400)
++ *   sysmmu_dpu0/1/2 0x1C100000/0x1C110000/0x1C120000 (v8): CTRL 0x0 (bit 0 enable), CFG 0x4, STATUS 0x8, FLPT_BASE 0xC,
++ *     VERSION 0x34, VM 0: CTRL_VM 0x8000 (bit 0), CFG_VM 0x8004, FLPT_BASE 0x800C (samsung-iommu.c sysmmu_reg_set)
++ * The blocks belong to the running display (the panel refreshes from them), so their clocks and power are on.
++ */
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++static void
++sweet_dpu_dump(const char *when)
++{
++	static int on = -1;
++	static vm_offset_t decon, win, wincon, rdma, mmu[3];
++	if (on < 0) {
++		int v = 0;
++		on = (PE_parse_boot_argn("sweetdpudump", &v, sizeof(v)) && v != 0) ? 1 : 0;
++	}
++	if (!on) {
++		return;
++	}
++	if (decon == 0) {
++		decon = ml_io_map(0x1C300000, 0x1000);
++		win = ml_io_map(0x1C310000, 0x2000);
++		wincon = ml_io_map(0x1C330000, 0x6000);
++		rdma = ml_io_map(0x1C0B0000, 0x6000);
++		for (int i = 0; i < 3; i++) {
++			mmu[i] = ml_io_map(0x1C100000 + 0x10000 * i, 0x9000);
++		}
++	}
++#define SWEET_DPU_RD(b, o) (*(volatile uint32_t *)((b) + (o)))
++	IOLog("SWEET DPU: %s decon GLOBAL_CON 0x%08x TRIG_CON 0x%08x SHD_REG_UP_REQ 0x%08x shd GLOBAL_CON 0x%08x shd TRIG_CON 0x%08x\n", when,
++	    SWEET_DPU_RD(decon, 0x20), SWEET_DPU_RD(decon, 0x30), SWEET_DPU_RD(decon, 0x50), SWEET_DPU_RD(decon, 0x820),
++	    SWEET_DPU_RD(decon, 0x830));
++	for (int w = 0; w < 6; w++) {
++		uint32_t con = SWEET_DPU_RD(wincon, 0x1000 * w);
++		if (w >= 2 && (con & 1) == 0) {
++			continue;
++		}
++		vm_offset_t g = win + 0x1000 * (w < 2 ? w : 0);
++		IOLog("SWEET DPU: %s win%d con 0x%08x (en %u ch %u)%s %08x %08x %08x %08x %08x %08x %08x %08x\n", when, w, con, con & 1,
++		    (con >> 4) & 7, w < 2 ? " geom" : " geom(win0)", SWEET_DPU_RD(g, 0x0), SWEET_DPU_RD(g, 0x4), SWEET_DPU_RD(g, 0x8),
++		    SWEET_DPU_RD(g, 0xC), SWEET_DPU_RD(g, 0x10), SWEET_DPU_RD(g, 0x14), SWEET_DPU_RD(g, 0x18), SWEET_DPU_RD(g, 0x1C));
++	}
++	for (int l = 0; l < 6; l++) {
++		vm_offset_t b = rdma + 0x1000 * l;
++		IOLog("SWEET DPU: %s rdma L%d en 0x%08x in0 0x%08x src_size 0x%08x src_off 0x%08x img 0x%08x y8 0x%08x shd_y8 0x%08x stride1 0x%08x\n",
++		    when, l, SWEET_DPU_RD(b, 0x0), SWEET_DPU_RD(b, 0x8), SWEET_DPU_RD(b, 0x10), SWEET_DPU_RD(b, 0x14), SWEET_DPU_RD(b, 0x18),
++		    SWEET_DPU_RD(b, 0x40), SWEET_DPU_RD(b, 0x440), SWEET_DPU_RD(b, 0x54));
++	}
++	for (int i = 0; i < 3; i++) {
++		vm_offset_t m = mmu[i];
++		IOLog("SWEET DPU: %s sysmmu_dpu%d ctrl 0x%08x cfg 0x%08x status 0x%08x flpt 0x%08x version 0x%08x ctrl_vm 0x%08x cfg_vm 0x%08x flpt_vm 0x%08x\n",
++		    when, i, SWEET_DPU_RD(m, 0x0), SWEET_DPU_RD(m, 0x4), SWEET_DPU_RD(m, 0x8), SWEET_DPU_RD(m, 0xC), SWEET_DPU_RD(m, 0x34),
++		    SWEET_DPU_RD(m, 0x8000), SWEET_DPU_RD(m, 0x8004), SWEET_DPU_RD(m, 0x800C));
++	}
++#undef SWEET_DPU_RD
++}
+ 
+ bool
+ AppleCLCD::start(IOService *provider)
+@@ -272,6 +340,7 @@
+ 	OSSafeReleaseNULL(ns);
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
++	sweet_dpu_dump("start");     /* patch 0146 */
+ 	return true;
+ }
+ 
+@@ -389,6 +458,9 @@
+ 	IOLockUnlock(fLock);
+ 	if ((++sweet_fb_swap_count % 1000) == 0) {
+ 		IOLog("SWEET FB: %llu swaps\n", sweet_fb_swap_count);
++	}
++	if (sweet_fb_swap_count == 600) {
++		sweet_dpu_dump("swap600");   /* patch 0146: the same registers while CoreAnimation presents */
+ 	}
+ 	/*
+ 	 * Frame statistics (patch 0141, boot-arg sweetfps=1, default off; G-10): CoreAnimation swaps every vsync even when nothing

@@ -619,3 +619,4 @@ zsize	xnu
 zt	xnu
 zzc_rate	xnu
 sweetsurf_align	patch:0145
+sweetdpudump	patch:0146
