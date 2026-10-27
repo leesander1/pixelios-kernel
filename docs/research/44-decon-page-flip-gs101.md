@@ -48,9 +48,11 @@ Also read: which window is enabled and which channel (DPP layer) feeds it; that 
 
 ## 2. Design A (bypass): contiguous scanout buffers
 
-1. Display size: render at the panel's 1080x2400 so no crop is needed. Today `xnu 0060` makes the logical display iPhone X sized (1125x2436) and
-   `present()` crops it (`fOffX/fOffY`). Option: boot-arg `sweetfb_native=1` already exists (presented size = panel size); CoreAnimation then
-   allocates 1080x2400 scanout surfaces. Check that SpringBoard lays out (it did at 1125x2436 because that is a known iPhone geometry) [guess risk].
+1. Display size: keep CoreAnimation at 1125x2436 and let the DPP crop. `sweetfb_native=1` (panel size) was tried with 0060 and UIKit has no
+   status bar / layout data for a 360x800-point screen (0060 header comment), so native size is not an option. The RDMA crops by itself:
+   `SRC_SIZE` = the buffer's width (stride / 4) and height, `SRC_OFFSET` = (x 22, y 18) = present()'s `fOffX/fOffY` for 1125x2436 on
+   1080x2400, `IMG_SIZE` = 1080x2400 (regs-dpp.h:143-160: IDMA_SRC_WIDTH/HEIGHT, IDMA_SRC_OFFSET_X/Y, IDMA_IMG_WIDTH/HEIGHT) [src; offset
+   arithmetic from 0060's centring]. The dump shows the live SRC_SIZE / SRC_OFFSET / IMG_SIZE the bootloader set for 0xFAC00000.
 2. Contiguous memory: the IOSurfaces CoreAnimation creates for scanout are ordinary SweetSurface allocations (IOBufferMemoryDescriptor,
    `0046`), not contiguous. Two ways:
    - a. SweetSurface allocates surfaces that look like scanout buffers (size = panel size, format 'b3a8'/'BGRA', created by backboardd)
@@ -75,7 +77,7 @@ then work. Larger job; only if the dump shows the SysMMU on.
 
 - U1: SysMMU state at handoff (dump bit 8/16).
 - U2: which RDMA layer and window scan out (dump bits 2/4).
-- U3: whether 1080x2400 (`sweetfb_native=1`) lays out correctly in SpringBoard.
+- U3: closed: no native size (UIKit); the DPP crops 1125x2436 -> 1080x2400 with SRC_OFFSET (22, 18).
 - U4: free physical memory below 4 GB for 3 x ~10.4 MB contiguous buffers (memory map of the ADT / XNU `gPhysBase` region).
 - U5: the exact "update done" poll (decon_reg.c) and whether the HW trigger must be re-armed after a shadow update in command mode.
 - U6: which DPU block stalled the bus in run 7 (0147 answers it).
