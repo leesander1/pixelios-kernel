@@ -2,7 +2,8 @@
 
 SoC: `soc/google/gs101`. Status: shim probe observed on hardware 2026-10-26 (`device/google/oriole/hardware/probe-log-2026-10-26-run3.txt`); iOS 16.7.16 boots
 to the lock screen 2026-10-27 (`hardware/ios-boot-2026-10-27-boot5.txt`), and touch unlocks it to the Home Screen
-(`hardware/ios-boot-2026-10-27-boot6-touch.txt`, photos in `hardware/`). Slow UI (no GPU); no Wi-Fi, clock or Bluetooth.
+(`hardware/ios-boot-2026-10-27-boot6-touch.txt`, photos in `hardware/`). Slow UI (CoreAnimation still renders on the CPU); no Wi-Fi, clock or Bluetooth. The GPU renders under iOS:
+Mesa Panfrost on the Mali-G78 passes a GPU clear, an IOSurface clear and an OpenGL ES 3.1 triangle (`hardware/gpu-batch1-2026-10-27.txt`).
 
 Captures from this device go in `hardware/`.
 

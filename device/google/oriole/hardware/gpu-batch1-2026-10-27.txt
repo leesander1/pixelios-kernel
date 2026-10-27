@@ -1,0 +1,37 @@
+Pixel 6 (oriole): first GPU rendering under iOS, Mesa Panfrost on the Mali-G78, 2026-10-27 (host UTC 02:33-04:32)
+
+Batch: device/google/oriole/batch-gpu1.sh (run A once, run B seven times while fixing what each run showed)
+Kernel: xnu-04457e5 sha256 26d6679ce244...; root: the iOS 16.7.16 root flashed for boots 5-8
+Userland: pixelios-userland gpu/ (Mesa 26.2.5 Panfrost cross-built for iOS 16 arm64, libdrm-xnu over SweetMali, Mesa patches 0001-0003),
+          final pixos-gpu-test from pixelios-userland 96a0ab7, installed by the dev overlay (gzipped + pixos-gpu-launch)
+
+Run A (read-only shim probe, logs/probe/20261027T023322Z-oriole-gpu1-probe_): RESULT PASS
+- GPU: GPU_ID 0x92020010 (Mali-G78, arch 9.2, product 2), 20 cores, gate open (powered and clocked at handoff)
+- GPU rails (S2MPG11): BUCK2S (shaders) mode 0 off at 600000 uV; BUCK8S (L2) and LDO1S (memory) on
+- ACPM DVFS GET: CPUCL0 1197000, CPUCL1 1197000, CPUCL2 1106000 kHz (the bootloader's init levels; the probe requests nothing)
+- Wi-Fi: "WLAN l2 gated: pcie1-phy-isolated", en=0 perst=0 (untouched PCIe1 PHY: the baseline for Wi-Fi bring-up)
+
+Run B (iOS, --touch --dvfs --gpu-handover, sweetmali=1, overlay jobs clear/surface/triangle), what each attempt showed:
+1. 34.4 MiB payload (19.3 MB overlay): back in fastboot ~4 s after fastboot boot. Bisected with dummy overlays: 26.0 and 30.4 MiB
+   boot, 34.4 MiB does not -> keep the payload under ~32 MiB (docs/AUTOMATION.md); the test binary now ships gzipped (4 MB).
+2. Overlay, unpack and exec of the ad-hoc signed binary work; SweetMali service present (GPU rail on, kernel Mali driver up);
+   the tests' stderr was not in the log (launchd /dev/null is copied to the console only for names in boot-arg sweetnull).
+3. With sweetnull: all three crash in panfrost_create_screen (NULL pipe_screen_config) -- in fact the OLD binary: the launcher
+   compared mtimes and the phone has no clock. Launcher now keys on the gzip trailer (CRC + size).
+4. New binary: libdrm-xnu opens SweetMali, query OK (GPU_ID 0x92020010, shaders 0x779fff, VA 0x2000000-0x100000000), but Panfrost
+   refuses the GPU: Mesa 26.2.5 has no Mali-G78 model row (PAN_PROD_ID(9,2,2)). Mesa patch 0003 adds it (values of upstream main's G68).
+5. Screen "Mali-G78 MC20 (Panfrost)"; BOs allocated and mapped (SweetMali uc map / clientMemoryForType). clear and surface crash in
+   glsl_array_type (GLSL type cache not set up without the GL state tracker; fixed in the screen helper). TRIANGLE PASSES:
+   GL_RENDERER Mali-G78 MC20 (Panfrost), GL_VERSION OpenGL ES 3.1 Mesa 26.2.5, GLSL ES 3.10; red 2016 blue 2080 other 0.
+6. clear and surface: "MESA: error: export failed", fence never signals: Panfrost builds pipe fences from sync files, which
+   libdrm-xnu did not implement. Triangle passes again.
+7. With sync files (pipe fds keyed by inode -> seqno): ALL THREE PASS
+     pixos-gpu-clear: RESULT PASS 64x64 cleared by the GPU, pixel 0xff336699
+     pixos-gpu-surface: RESULT PASS IOSurface 449 cleared by the GPU, pixel 0xff993366
+     pixos-gles-triangle: RESULT PASS red 2016 blue 2080 other 0 (half = 2048); (8,8) = ff0000, (56,56) = 0000ff
+   No crash, no Mesa error, no SweetMali error line; no panic in any run.
+
+Evidence the GPU did the work: Mesa Panfrost has no CPU path for clears into these targets or for draws; the pixels were read back
+from GPU-mapped memory (and from an IOSurface through IOSurfaceLock). SweetMali logs only its first 64 user-client calls per boot
+(patch 0113), so the job submits themselves are not in the log; any failing call would be (SM_UC_ERR), and none appeared.
+Not done: CoreAnimation itself still renders on the CPU (the EAGL stand-in and the backboardd injection are the next stage).
