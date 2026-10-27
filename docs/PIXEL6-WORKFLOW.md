@@ -52,7 +52,8 @@ unpacked on the phone (`pixelios-userland gpu/common/gzunpack.c`; the phone has 
   (pushing to `main` also triggers it; workflows on the fork are enabled). Then
   `tools/ci-kernel --commit HEAD --expect-string "<a string your patch logs>"` downloads and verifies it to `~/pixelios-artifacts/xnu-<sha>/`.
   There is no local xnu build on this Mac (`tools/xnu-local-build` needs a Linux host).
-- Kernel in use: `~/pixelios-artifacts/xnu-49194a5/kernel.development.sweet` (patches up to 0148: surface row alignment + copy timing,
+- Kernel in use: `~/pixelios-artifacts/xnu-db4a387/kernel.development.sweet` (patches up to 0149: the backlight service, log-only unless
+  `sweetbright=1`; up to 0148: surface row alignment + copy timing,
   the staged read-only DPU dump `sweetdpudump=MASK`, the per-board Wi-Fi pin). `xnu-6757417` = up to 0145 (the last kernel that ran on hardware).
 
 ## 4. Userland GPU stack (pixelios-userland `gpu/`)
@@ -87,7 +88,7 @@ Wi-Fi link test and XNU attach). After run 7 the phone needs a Power+VolDown hol
 | Lag | the kernel copies every frame to the panel with the CPU: 11-25 ms per frame (patch 0145 timing) | **page flip** (user's choice): research done so far below; next = the staged read-only dump (0147, `sweetdpudump=7`), then the flip |
 | Wi-Fi (BCM4389) | link chain S00-S34 ran on oriole, chip id 0x10034389; firmware extracted (`tools/extract-wlanfw.sh`, from the Android 12 factory zip) | `device/google/oriole/batch-wlan2.sh`: A = `--wlan-link=36` with 1200 s, B = XNU read-only attach + container check (level 2); C (`RUN_C=1`, ask the user first) = level 5 chip RAM writes. Level 6 (start the chip): the pin is per board since xnu 0148 (ADT `/sweet-wlan` `board`; oriole 1607051 B, crc32 0x54b872bf). Note: the glue mutant 'CFG clause kept as a string needle' fails to compile under macOS clang (pre-existing; run the mutants on Linux for a clean result) |
 | Bluetooth | surveyed (`docs/research/45-bluetooth-survey-oriole.md`): BCM4389 BT = HCI over USI16 UART `0x175B0000`, pins gpp16-2/gpp14-3/gpa6-6; iOS wants `/dev/uart.bluetooth` + `/dev/bt*` + BlueTool | `BCM.hcd` extracted (B0 done); next the shim UART/HCI_Reset probe (B1/B2) |
-| Brightness | not started: stuck at the bootloader's level; design in `docs/research/46-panel-brightness-oriole.md` (DCS 0x51 `51 HI LO`, 4..4095, via DSIM0 0x1C2C0000) | L1 read-only DSIM dump, then `sweetbright=N` |
+| Brightness | xnu 0149: the service iOS BrightnessControl looks for (`backlight-control`, `brightness-nits` 16.16) maps nits to panel DBV; log-only by default, `sweetbright=1` sends DCS 0x51 via DSIM0 (`docs/research/46`) | next run: see `SWEET BL:` requests + the DSIM dump (mask bit 32); then a run with `sweetbright=1` (user present) |
 | Buttons | power key works (SWEET KEYS events on oriole); volume keys: driver loads (xnu 0087), never pressed in a run yet | press volume up/down in a run and check `SWEET KEYS: key=1/2` |
 | Battery | the 100 % is a static value: xnu 0061 is the Xiaomi (Qualcomm SPMI) driver, real only with `sweetbattery=1` on that PMIC; the Pixel 6 fuel gauge is a different chip | survey the oriole fuel gauge (I2C) |
 | Vibration | not started (Cirrus haptics amp on I2C + its firmware from the factory image) | survey |
