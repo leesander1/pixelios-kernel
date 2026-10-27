@@ -63,3 +63,13 @@ Evening session (kernel db4a387 = xnu 0145-0149, overlay eagl7)
   IN_CTRL_0 0xff400000, SRC_SIZE = IMG_SIZE 0x09600438 (2400 x 1080), SRC_OFFSET 0, BASEADDR_Y8 = shadow = 0xFAC00000, SRC_STRIDE_1 0;
   L1-L5 base 0. DSIM0 SFR_CTRL 0x3, FIFOCTRL 0x5507 (PH/PL/RX empty), CMD_CONFIG 0 (packet-go off), CMD_STATUS 0. The SysMMU (mask 8/16)
   was not read: after this run the remaining suspect for run 7's hang.
+
+Wi-Fi XNU attach on oriole (run wd2-oriole5, logs/runs/20261027T21*-wd2-oriole5, kernel 0153 = xnu up to 0153, --wlan-hold --wlan-level 2
+--wlanfw oriole sd1a container, sweetreplay=WLAN, --duration 480): the SWEET WLAN lines (printed at boot, before the USB log) came back through
+the 0151-0153 replay (fires ~200 s after AppleCLCD start = ~+340 s; the 300 s runs wd2-oriole3/4 ended before it).
+- "SWEET WLAN: board oriole: pinned firmware 1607051 bytes crc 0x54b872bf" (xnu 0148 lookup on hardware)
+- container FW 1607051 crc 0x54b872bf ok, NVRM 24168 crc 0xef37b822 ok, CLM 17396 crc 0xa38e1ad9 ok, at 0x882774000 (1648688 bytes, 3 entries)
+- PHY isolation word 0x1; ELBI 0x2C8 0x3008911 (L0); ATU r0 CFG -> 0x60ffe000, r1 MEM 0x60000000; EP Command/Status 0x100002, BAR0 0x60000004
+- chip id 0x10034389; EROM cores: 0x800 rev 70 (ChipCommon), 0x83c rev 72 (PCIe2), 0x847 rev 9 (ARM CA7), 3 x 0x812 rev 86 (D11), 0x851 rev 4,
+  0x849 rev 9 (SYS_MEM), 0x857 rev 5, 0x840 rev 20, 0x827 rev 40 (PMU), 0x135 x3, 0x31 x3, 0xfff; PMU and wrapper reads as on bluejay
+- "SWEET WLAN: stage 1 done level 2 (read-only)". Next: level 5 (chip RAM writes, RUN_C=1, needs the user's OK), then level 6 (start the chip).
