@@ -2379,6 +2379,12 @@ static void rune(void)
 	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_IOCTL, 0x1u) == -SWW_E_ORDER && f.nw == n6 && f.nrun == 0);   /* the end store needs its predecessors */
 	re_put(&f, &x);
 	f.win0 = SWW_WIN_CA7WRAP;
+	f.ca.ctl = 0;                                                   /* out of reset, but IOCTL is not the 0x3 the mid store left (0x23: CPUHALT still set) */
+	x.done |= ((uint64_t)1 << SWT_CA_RUN_ASSERT) | ((uint64_t)1 << SWT_CA_RUN_MID) | ((uint64_t)1 << SWT_CA_RUN_RELEASE);
+	f.ca.ioctl = 0x23u;
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_IOCTL, 0x1u) == -SWW_E_OLD && f.nw == n6 && f.nrun == 0);     /* the end store needs the old IOCTL 0x3 */
+	re_put(&f, &x);
+	f.win0 = SWW_WIN_CA7WRAP;
 	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_IOCTL, 0x0u) == -SWW_E_DENIED && f.nw == n6);            /* IOCTL 0 (clock off) is no tuple */
 	re_put(&f, &x);
 	f.win0 = SWW_WIN_SMWRAP;

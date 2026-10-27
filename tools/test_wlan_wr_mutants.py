@@ -261,8 +261,8 @@ MUTANTS = [
     ("level gate of swl_wr removed", [("if ((int)p->run > x->level - SWW_LEVEL0) {\n\t\treturn swl_stop(x, SWW_E_LEVEL);", "if (0) {\n\t\treturn swl_stop(x, SWW_E_LEVEL);")], None),
     ("level gate of the reads removed", [("(int)swl_rt[i].run > x->level - SWW_LEVEL0", "0")], None),
     ("stage 3 below level 3 allowed", [("if (x->level < SWW_LEVEL0 + 1) {", "if (0) {")], None),
-    ("tuple consumed more than once", [("if ((p->flags & SWT_ONCE) && (x->done & (1u << t))) {", "if (0) {")], None),
-    ("predecessor not required", [("if (p->pred1 && !(x->done & (1u << (p->pred1 - 1u)))) {", "if (0) {")], None),
+    ("tuple consumed more than once", [("if ((p->flags & SWT_ONCE) && (x->done & ((uint64_t)1 << t))) {", "if (0) {")], None),
+    ("predecessor not required", [("if (p->pred1 && !(x->done & ((uint64_t)1 << (p->pred1 - 1u)))) {", "if (0) {")], None),
     ("phase flags not required", [("if ((x->flags & p->need) != p->need) {", "if (0) {")], None),
     ("bank state: nrb pin of swl_wr", [("(p->flags & SWT_BANK) && (x->nrb != SWW_NRB || ", "(p->flags & SWT_BANK) && (")], None),
     ("bank state: nb pin of swl_wr", [("|| x->nb != SWW_NB || x->nbank >= x->nb ||", "|| x->nbank >= x->nb ||")], None),
@@ -282,7 +282,7 @@ MUTANTS = [
     ("read-back removed entirely", [("if (swl_rdx(x, space, win, off, &rb)) {", "if (0 && swl_rdx(x, space, win, off, &rb)) {"), ("if ((rb ^ val) & p->vmask) {", "if (0) {")], None),
     ("read-back read failure ignored", [("if (swl_rdx(x, space, win, off, &rb)) {", "if (0) {")], None),
     ("old read failure ignored", [("if (swl_rdx(x, space, win, off, &old)) {\n\t\t\treturn swl_stop(x, SWW_E_RD);", "if (0) {\n\t\t\treturn swl_stop(x, SWW_E_RD);")], None),
-    ("done bit not recorded", [("\tx->done |= 1u << t;\n", "")], None),
+    ("done bit not recorded", [("\tx->done |= (uint64_t)1 << t;\n", "")], None),
     ("bank count not recorded", [("\t\tx->nbank++;\n", "")], None),
     # --- the 0124 preconditions inside swl_wpre
     ("link precondition dropped", [("bad = swl_pre_link(iso, ltssm, a0, a1);", "bad = 0;")], None),
@@ -477,7 +477,7 @@ MUTANTS = [
     ("run C words: type word", [("#define SWW_RTLV_RNGSIG 0xFEEDC0DEu ", "#define SWW_RTLV_RNGSIG 0xFEEDFE51u ")], None),
     ("run C words: token is not the stored word", [("\tif (k == SWK_TOKEN) {\n\t\treturn x->tok;\n\t}", "\tif (k == SWK_TOKEN) {\n\t\treturn ~x->tok;\n\t}")], None),
     # --- run C: swl_wr / pick / table
-    ("run C pick: tuple not replaced when consumed", [("(((swl_wt[t].flags & SWT_ONCE) && (x->done & (1u << t))) || ((swl_wt[t].flags & SWT_TW)", "((0) || ((swl_wt[t].flags & SWT_TW)")], None),
+    ("run C pick: tuple not replaced when consumed", [("(((swl_wt[t].flags & SWT_ONCE) && (x->done & ((uint64_t)1 << t))) || ((swl_wt[t].flags & SWT_TW)", "((0) || ((swl_wt[t].flags & SWT_TW)")], None),
     ("run C pick: tuple not replaced by kind", [("|| ((swl_wt[t].flags & SWT_TW) && swl_wt[t].kind != swl_tw_kind(x, win + off)))) {", "|| 0)) {")], None),
     ("run C pick: kind taken from the offset", [("swl_wt[t].kind != swl_tw_kind(x, win + off)", "swl_wt[t].kind != swl_tw_kind(x, off)")], None),
     ("run C pick: takeover at a level that does not allow it", [("if (n <= t || (int)swl_wt[n].run > x->level - SWW_LEVEL0) {", "if (n <= t) {")], None),
