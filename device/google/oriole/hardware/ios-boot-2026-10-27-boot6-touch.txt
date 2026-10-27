@@ -1,0 +1,23 @@
+Pixel 6 (oriole): touch works, unlock and Home Screen by finger, 2026-10-27 (host UTC 00:53-01:09)
+
+Run:     xrun --board oriole --no-camera --gui --rails --cpus 8 --duration 900 --restart 960,bootloader
+         --args "sweettouchmux=1 sweettouchcs=1 sweettouchpoke=m:10c00640=0=10;d:100;m:10c0180c=5=f;"   (now: xrun --touch)
+         label oriole-boot6-touch, pixelios-kernel 4c1fc75
+Kernel:  xnu-04457e5 kernel.development.sweet, sha256 26d6679ce244447353ad71a73a52cb241f729bc80c1783d0e1295c4a4118c882
+Root:    same flashed iOS 16.7.16 root as boot 5 (third boot of it)
+Log:     2799 UDP log lines from +162 s (the Mac's address was set late, so the touch bring-up lines before that are not in it)
+
+Result (xrun report): RESULT: PASS, no panic; ended by the host at +900 s with a software reset over the USB link; phone back in
+fastboot.
+
+Observed (human at the phone, plus the log):
+- Touch: 108 "SWEET HID: touch" lines, 54 finger-downs, from the first swipe at +482 s to +893 s. Up to four contacts at once
+  (touch 1/2/3 down seen 5/2/1 times). Coordinates span the 1080x2400 panel; edge flags at the sides and bottom.
+- Swipe up from the bottom middle (534,2362 -> 531,1776) unlocked to the Home Screen; swiping between the two Home Screen pages
+  works (photos ios-homescreen-p1/p2-2026-10-27-boot6.jpg); the on-screen keyboard types.
+- Settings > General > About: Model Name "Pixel 6" (from the oriole ADT); Name "Pixel 6a" (hard-coded by the userland root build,
+  fixed in pixelios-userland 52c97ef for the next root build).
+- The UI is slow and laggy (no GPU: CPU rendering).
+- Crashes: AegirPoster 90x SIGABRT, mediaserverd 2x SIGABRT; neither stops SpringBoard.
+- The power-chip rail step (--rails: S2MPG10 LDO25M/LDO26M enable bit) ran in the shim before XNU; its result lines go to the
+  shim console, not to this log.

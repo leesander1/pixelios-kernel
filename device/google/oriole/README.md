@@ -1,7 +1,8 @@
 # Pixel 6 (oriole)
 
 SoC: `soc/google/gs101`. Status: shim probe observed on hardware 2026-10-26 (`device/google/oriole/hardware/probe-log-2026-10-26-run3.txt`); iOS 16.7.16 boots
-to the lock screen 2026-10-27 (`hardware/ios-boot-2026-10-27-boot5.txt`, photo `hardware/ios-lockscreen-2026-10-27-boot5.jpg`). No touch yet.
+to the lock screen 2026-10-27 (`hardware/ios-boot-2026-10-27-boot5.txt`), and touch unlocks it to the Home Screen
+(`hardware/ios-boot-2026-10-27-boot6-touch.txt`, photos in `hardware/`). Slow UI (no GPU); no Wi-Fi, clock or Bluetooth.
 
 Captures from this device go in `hardware/`.
 
@@ -35,10 +36,14 @@ measured free.
 ## iOS boot (2026-10-27)
 
 Kernel from the `xnu.yml` CI, the iOS root in `userdata`, then
-`PIXOS_DEVICE=oriole tools/xrun --board oriole --no-camera --gui --cpus 8 --duration 900 --restart 960,bootloader`.
+`PIXOS_DEVICE=oriole tools/xrun --board oriole --no-camera --gui --touch --cpus 8 --duration 900 --restart 960,bootloader`.
+On a macOS host the Mac needs 192.168.7.1 on the phone's USB Ethernet port for the log; set it once and macOS keeps it:
+`sudo networksetup -setmanual "Sweet iOS (USB Ethernet)" 192.168.7.1 255.255.255.0` (the service exists after the first boot).
 
 - SpringBoard needs `/product` in the ADT: `mkadt.py` copies it from `research/ipsw-x/d22ap.adt` (unwrap the IPSW's
   `DeviceTree.d22ap.im4p` with `tools/adt.py unwrap`; it only warns when the file is missing). Without it SpringBoard aborts in a loop on
   "Failed to load bounding path bitmap data". A boot without `/product` leaves the root unusable: reflash the pristine image.
 - The first boot of a fresh root runs DataMigration (about 6 min at 8 CPUs) before SpringBoard.
-- Touch: the bootloader leaves USI11 out of SPI mode and the touch pads unconfigured (see the boot record).
+- Touch: the bootloader leaves USI11 out of SPI mode, the touch pads unconfigured and TS_SPI_SEL undriven, so touch needs
+  `--touch` (the 6a recipe: rails on in the shim, `sweettouchmux=1`, the ABL transfer and the oscillator clock). Observed working
+  2026-10-27: multi-touch, unlock swipe, Home Screen paging, keyboard.
