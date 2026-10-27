@@ -53,6 +53,10 @@ struct fake {
 	unsigned rom0;                                  /* run D: a store to backplane address 0 is accepted and ignored (a ROM bank aliased at 0, unknown X4) */
 	unsigned clob_at;                               /* run C: after this store number the RAM word at backplane address clob_bp flips a bit (a later store clobbering an earlier one; 0 = never) */
 	uint32_t clob_bp;
+	unsigned long fw_up_us, run_t;                  /* run E: the firmware writes fw_sh at backplane sh_bp this long after the CA7 leaves CPUHALT (0 = never) */
+	uint32_t fw_sh, sh_bp;
+	int running;                                    /* the CA7 is out of reset with CPUHALT clear */
+	unsigned nrun;                                  /* times it was released */
 };
 
 static uint32_t *f_wrap(struct fake *f, uint32_t win)
@@ -173,11 +177,16 @@ static int f_wr(void *c, int space, uint32_t win, uint32_t off, uint32_t v)
 		if ((wp[1] & 1u) && f->clock_us - f->assert_t[f->win0 == SWW_WIN_CA7WRAP] < 10)      /* aiutils.c:1263 OSL_DELAY(10) after the assert */
 			f->early++;
 		wp[0] = v | f->ioctl_noise;
+		if (f->win0 == SWW_WIN_CA7WRAP && !(wp[0] & SWW_CPUHALT) && !(wp[1] & 1u) && !f->running) {
+			f->running = 1; f->run_t = f->clock_us; f->nrun++;
+		}
 	}
 	if (wp && off == SWL_AGENT_RESET_CTL) {
 		if (v == 1)
 			f->assert_t[f->win0 == SWW_WIN_CA7WRAP] = f->clock_us;
 		wp[1] = v;
+		if (f->win0 == SWW_WIN_CA7WRAP && (v & 1u))
+			f->running = 0;
 		if (v == 1 && ((f->win0 == SWW_WIN_SMWRAP && f->st_stuck_sm) || (f->win0 == SWW_WIN_CA7WRAP && f->st_stuck_ca)))
 			wp[2] = 1;
 	}
@@ -198,6 +207,8 @@ static void f_delay(void *c, unsigned us)
 	uint32_t *wp = f_wrap(f, f->win0);
 
 	f->clock_us += us;
+	if (f->running && f->fw_up_us && f->ram && f->clock_us - f->run_t >= f->fw_up_us)
+		f->ram[f->sh_bp / 4] = f->fw_sh;
 	if (us == 1 && wp && f->after1) {              /* the 1 us after the last IOCTL write (aiutils.c:1320): the wrapper changes behind the sequence's back */
 		if (f->after1 == 1) wp[2] = 1;
 		else if (f->after1 == 2) wp[1] |= 1;
@@ -437,7 +448,7 @@ static void deny_sweep(void)
 		for (bit = 0; bit < 32; bit++) {
 			unsigned q, other = 0;
 
-			for (q = 0; q < SWT_N_A; q++)       /* the one other value a register may take (RESET_CTL 1 and 0, IOCTL 3 and 1) */
+			for (q = 0; q < SWT_N; q++)         /* the one other value a register may take (RESET_CTL 1 and 0, IOCTL 3 and 1; patch 0154: the CA7 IOCTL 0x3 and 0x1 of run E) */
 				other |= swl_wt[q].space == p->space && swl_wt[q].win == p->win && swl_wt[q].off == p->off && swl_wt[q].val == (p->val ^ (1u << bit));
 			CHECK((swl_wr_ok(p->space, p->win, p->off, p->val ^ (1u << bit)) >= 0) == (other != 0));
 		}
@@ -454,7 +465,7 @@ static void deny_sweep(void)
 	      swl_wr_ok(SWW_ATU, 0, SWW_R2(0x0C), 0) < 0 && swl_wr_ok(SWW_ATU, 0, SWW_R2(0x18), 0) < 0 && swl_wr_ok(SWW_ATU, 0, SWW_R2(0x20), 0) < 0 && swl_wr_ok(SWW_ATU, 0, 0x600, 0x80000000) < 0);
 	CHECK(swl_wr_ok(SWW_BAR0, 0x18001000, SWW_SRPWR, 0x200) < 0 && swl_wr_ok(SWW_BAR0, 0x18001000, SWW_SRPWR, 0x00030300) < 0 && swl_wr_ok(SWW_BAR0, 0x18126000, 0x400, 1) < 0 &&
 	      swl_wr_ok(SWW_BAR0, 0x18126000, 0x404, 1) < 0 && swl_wr_ok(SWW_BAR0, 0x18126000, 0x808, 1) < 0 && swl_wr_ok(SWW_BAR0, 0x18120000, 0x80C, 1) < 0 &&
-	      swl_wr_ok(SWW_BAR0, 0x18120000, 0x408, 0x03) < 0 && swl_wr_ok(SWW_BAR0, 0x18126000, 0x408, 0x23) < 0 && swl_wr_ok(SWW_BAR0, 0x18121000, 0x800, 1) < 0 &&
+	      swl_wr_ok(SWW_BAR0, 0x18120000, 0x408, 0x03) == SWT_CA_RUN_MID && swl_wt[SWT_CA_RUN_MID].run == 5 && swl_wr_ok(SWW_BAR0, 0x18120000, 0x408, 0) < 0 && swl_wr_ok(SWW_BAR0, 0x18126000, 0x408, 0x23) < 0 && swl_wr_ok(SWW_BAR0, 0x18121000, 0x800, 1) < 0 &&
 	      swl_wr_ok(SWW_BAR0, 0x18000000, 0x600, 0) < 0 && swl_wr_ok(SWW_BAR0, 0x18012000, 0x600, 0) < 0 && swl_wr_ok(SWW_BAR2, 0, 0x1FFFFC, 0) < 0 && swl_wr_ok(SWW_BAR2, 0, 4, 0) < 0 &&
 	      swl_wr_ok(SWW_BAR0, 0x18026000, 0x40, 0) < 0 && swl_wr_ok(SWW_BAR0, 0x18026000, 0, 0) < 0);
 	/* a store that matches no row never reaches the bus and latches STOPPED */
@@ -1225,7 +1236,7 @@ static void runb_deny_sweep(void)
 	for (v = SWT_N_B; v < SWT_N_C; v++)
 		CHECK(swl_wt[v].run == 3 && swl_wt[v].row >= 11 && swl_wt[v].row <= 13 && ((swl_wt[v].space == SWW_BAR2 && swl_wt[v].win == 0x400000u) || (swl_wt[v].space == SWW_CFG && swl_wt[v].off == 0x84)));
 	/* the run D tuple: run 4, row 14, once, a reset-vector value decided at run time, BAR2 window 0 offset 0 exactly, after W13 */
-	CHECK(SWT_N == SWT_N_C + 1 && SWT_RESET0 == SWT_N_C && swl_wt[SWT_RESET0].run == 4 && swl_wt[SWT_RESET0].row == 14 && swl_wt[SWT_RESET0].space == SWW_BAR2 && swl_wt[SWT_RESET0].win == 0 && swl_wt[SWT_RESET0].off == 0 &&
+	CHECK(SWT_N_D == SWT_N_C + 1 && SWT_RESET0 == SWT_N_C && swl_wt[SWT_RESET0].run == 4 && swl_wt[SWT_RESET0].row == 14 && swl_wt[SWT_RESET0].space == SWW_BAR2 && swl_wt[SWT_RESET0].win == 0 && swl_wt[SWT_RESET0].off == 0 &&
 	      swl_wt[SWT_RESET0].hi == 0 && swl_wt[SWT_RESET0].flags == (SWT_ONCE | SWT_RV) && swl_wt[SWT_RESET0].need == SWF_W13 && swl_wt[SWT_RESET0].pred1 == 0 && swl_wt[SWT_RESET0].rgrp == 0 &&
 	      swl_wt[SWT_RESET0].vmask == 0xFFFFFFFFu && swl_wt[SWT_RESET0].omask == 0x2u && swl_wt[SWT_RESET0].oval == 0);   /* review 0132 F1 (secured bit) and F3 (whole word) */
 	/* reads: the BAR2 words of run B only at level 4, windows 0 and 0x400000, inside the table's ranges */
@@ -1652,8 +1663,10 @@ static void runc_deny_sweep(void)
 	CHECK(swl_wr_ok_from(SWT_LAST_HI + 1, SWW_BAR2, 0x400000, 0x9FFF0u, 0) == SWT_NV_VARS && swl_wr_ok_from(SWT_NV_VARS + 1, SWW_BAR2, 0x400000, 0x9FFF0u, 0) == SWT_NV_TOKEN && swl_wr_ok_from(SWT_NV_TOKEN + 1, SWW_BAR2, 0x400000, 0x9FFF0u, 0) == SWT_NV_RTLV);
 	CHECK(swl_wr_ok_from(SWT_NV_VARS + 1, SWW_BAR2, 0x400000, 0x1FFFFCu, 5) == SWT_NV_TOKEN && swl_wr_ok_from(SWT_NV_TOKEN + 1, SWW_BAR2, 0x400000, 0x1FFFFCu, 5) < 0);
 	CHECK(swl_wr_ok(SWW_BAR2, 0, 0x3B0000u, 5) < 0 && swl_wr_ok(SWW_BAR2, 0, 0, 5) == SWT_RESET0 && swl_wr_ok(SWW_BAR2, 0, 4, 5) < 0 && swl_wr_ok(SWW_BAR2, 0x200000u, 0, 5) < 0 && swl_wr_ok(SWW_BAR0, 0x400000, 0, 5) < 0 && swl_wr_ok(SWW_ATU, 0x400000, 0, 5) < 0);
-	CHECK(swl_wr_ok(SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL && swl_wr_ok_from(SWT_WIN2_TAIL + 1, SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL_C && swl_wr_ok_from(SWT_WIN2_TAIL_C + 1, SWW_CFG, 0, 0x84, 0x400000) < 0);
-	CHECK(swl_wr_ok(SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO && swl_wr_ok_from(SWT_WIN2_ZERO + 1, SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO_C && swl_wr_ok_from(SWT_WIN2_ZERO_C + 1, SWW_CFG, 0, 0x84, 0) < 0);
+	CHECK(swl_wr_ok(SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL && swl_wr_ok_from(SWT_WIN2_TAIL + 1, SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL_C && swl_wr_ok_from(SWT_WIN2_TAIL_C + 1, SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL_E &&
+	      swl_wr_ok_from(SWT_WIN2_TAIL_E + 1, SWW_CFG, 0, 0x84, 0x400000) < 0);
+	CHECK(swl_wr_ok(SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO && swl_wr_ok_from(SWT_WIN2_ZERO + 1, SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO_C && swl_wr_ok_from(SWT_WIN2_ZERO_C + 1, SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO_E &&
+	      swl_wr_ok_from(SWT_WIN2_ZERO_E + 1, SWW_CFG, 0, 0x84, 0) < 0);
 	{
 		unsigned v;
 
@@ -1661,7 +1674,7 @@ static void runc_deny_sweep(void)
 			CHECK(((swl_wt[v].flags & SWT_TW) != 0) == (v >= SWT_NV_VARS && v <= SWT_NV_RTLV) && (!(swl_wt[v].flags & SWT_TW) || (swl_wt[v].kind >= SWK_VARS && swl_wt[v].kind <= SWK_RTLV)) &&
 			      (!!(swl_wt[v].flags & SWT_TW) || swl_wt[v].kind == 0));
 	}
-	CHECK(SWT_N == 28 && SWT_N_C == 27 && SWT_N_B == 22 && SWT_WIN2_TAIL_C == 22 && SWT_NV_VARS == 23 && SWT_NV_TOKEN == 24 && SWT_NV_RTLV == 25 && SWT_WIN2_ZERO_C == 26);
+	CHECK(SWT_N == 35 && SWT_N_D == 28 && SWT_N_C == 27 && SWT_N_B == 22 && SWT_WIN2_TAIL_C == 22 && SWT_NV_VARS == 23 && SWT_NV_TOKEN == 24 && SWT_NV_RTLV == 25 && SWT_WIN2_ZERO_C == 26);
 }
 
 /* the stores that reached the bus other than the restore of cfg 0x84 (a refused store with the window moved runs that restore) */
@@ -2198,6 +2211,187 @@ static void rund(void)
 	CHECK(runc(&f, &x, 6, len, pin) == 0 && x.nv_varsize == cx.varsize && ramarr[0] == w0);
 }
 
+/* ---------------------------------------------------------------- run E (patch 0154): W15 CA7 release, W16 shared-area poll, W17 CA7 back into reset --------------------------------
+ * The fake's CA7 "runs" while its IOCTL has CPUHALT clear and RESET_CTL is 0; the firmware is modelled as one store of fw_sh to the last RAM word fw_up_us after the release.
+ * The invariant of every case: the fake ARM is not running when the stage returns (W17 or the CA restore put it back into reset), and every store is a tuple or a restore row. */
+#define ELEVEL7 (CLEVEL5 | SWF_W14 | SWF_W15 | SWF_W16 | SWF_W17)
+static struct fake ef;                                  /* the state after run D (level 6) on the pinned image */
+static struct swl_wx ex;
+static uint32_t eram[RAM_WORDS];
+
+static void re_put(struct fake *f, struct swl_wx *x)
+{
+	*f = ef;
+	*x = ex;
+	memcpy(ramarr, eram, sizeof ramarr);
+	f->ram = ramarr;
+	bus(&cbus, f);
+	cbus.rng = t_rng;
+	x->b = &cbus;
+	x->level = 7;
+	f->fw_up_us = 0; f->fw_sh = 0; f->sh_bp = 0x49fffcu;
+	loglen = 0; logbuf[0] = 0;
+}
+
+static int re_run(struct swl_wx *x)
+{
+	int rc = swl_w15(x);
+
+	rc = rc ? rc : swl_w16(x);
+	return rc ? rc : swl_w17(x);
+}
+
+static void rune(void)
+{
+	static struct fake f, g;
+	struct swl_wx x;
+	const uint32_t len = 1764018u, pin = 0x1153ccffu, last = 0x49fffcu;
+	uint32_t n6, k, nst, nrd, i, w0;
+	char t[256];
+
+	cx_init_rng();
+	mkimg(len);
+	imgbuf[0] = 0x10; imgbuf[1] = 0; imgbuf[2] = 0; imgbuf[3] = 0xEA;
+	forge(imgbuf, len, pin);
+	w0 = iw(0);
+	cx_hand(336);
+	/* the level 6 reference: the ARM is never released below level 7 */
+	obsb(&g, 336);
+	g.sh_bp = last; g.fw_up_us = 1; g.fw_sh = 0x0049a000u;
+	CHECK(runc(&g, &x, 6, len, pin) == 0 && x.flags == (CLEVEL5 | SWF_W14) && g.nrun == 0 && !g.running && g.ca.ioctl == 0x21u && strstr(logbuf, "W15") == 0);
+	n6 = g.nw;
+	ef = g; ex = x; memcpy(eram, ramarr, sizeof ramarr);
+	CHECK(ramarr[last / 4] == x.tok && x.tok != 0);
+
+	/* level 7, the whole run, the shared area above 0x400000 (read under the tail window): released once, address after the 3rd poll, 16 words, back in reset, window 0 */
+	obsb(&f, 336);
+	f.sh_bp = last; f.fw_up_us = 120000u; f.fw_sh = 0x0049a000u;
+	for (i = 0; i < 16; i++)
+		ramarr[0x0049a000u / 4 + i] = 0x5A000000u + i;
+	CHECK(runc(&f, &x, 7, len, pin) == 0);
+	CHECK(x.stopped == 0 && x.restore == SWW_RS_NONE && x.flags == ELEVEL7 && x.armed == 0 && x.nstore == f.nw && all_allowed(&f));
+	CHECK(f.nrun == 1 && !f.running && (f.ca.ctl & 1u) && f.win2 == 0 && f.win0 == SWW_WIN_CA7WRAP && ramarr[0] == w0);
+	CHECK(x.sh_addr == 0x0049a000u && x.sh_polls == 4 && x.sh_n == 16 && x.sh[0] == 0x5A000000u && x.sh[15] == 0x5A00000Fu);
+	CHECK(f.nw == n6 + 5 + 2 + 2);                                  /* W15: the window select + 4 wrapper stores; W16: cfg 0x84 twice; W17: the window select + RESET_CTL */
+	snprintf(t, sizeof t, "SWEET WLAN: stage 3 level 7 done shared=0x0049a000 reads=4 words=16 vars=%u token=%#010x\n", x.nv_varsize, x.tok);
+	CHECK(strstr(logbuf, t) != 0 && strstr(logbuf, "W15 CA7 released (CPUHALT clear), the firmware runs") != 0 && strstr(logbuf, "W16 shared area at 0x0049a000 after 4 reads, 16 words") != 0);
+	CHECK(strstr(logbuf, "W16 sh+0x30 0x5a00000c 0x5a00000d 0x5a00000e 0x5a00000f") != 0 && strstr(logbuf, "W17 CA7 back in reset: ioctl 0x1 reset_ctl 0x1 reset_st 0") != 0);
+	CHECK(strstr(logbuf, "level 6 done") == 0 && strstr(logbuf, "W15 wrapper 0x18120000 after reset: ioctl 0x1 reset_ctl 0 reset_st 0") != 0);
+
+	/* the shared area below 0x400000: read under window 0 after cfg 0x84 is back at 0 */
+	re_put(&f, &x);
+	f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = 0x003f0000u;
+	ramarr[0x003f0000u / 4] = 0x11223344u;
+	CHECK(re_run(&x) == 0 && x.sh_addr == 0x003f0000u && x.sh_polls == 1 && x.sh_n == 16 && x.sh[0] == 0x11223344u && f.win2 == 0 && !f.running && x.flags == ELEVEL7 && all_allowed(&f));
+	/* ... 16 bytes below the end of window 0: only the 4 words window 0 holds are read (the struct is logged short, not read across the window) */
+	re_put(&f, &x);
+	f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = 0x003ffff0u;
+	CHECK(re_run(&x) == 0 && x.sh_addr == 0x003ffff0u && x.sh_n == 4 && !f.running);
+	/* ... just below the last word: the words up to ram_end */
+	re_put(&f, &x);
+	f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = last - 8u;
+	CHECK(re_run(&x) == 0 && x.sh_addr == last - 8u && x.sh_n == 3 && !f.running);
+
+	/* values that are not an address: the poll goes on to the timeout, then the ARM goes back into reset (a timeout is a result) */
+	{
+		static const uint32_t bad[] = { 0, 0x001ffffcu, 0x0049a002u, 0x0049fffcu, 0x004a0000u, 0x7fffffffu };
+		for (k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+			re_put(&f, &x);
+			f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = bad[k];
+			CHECK(re_run(&x) == 0 && x.sh_addr == 0 && x.sh_polls == SWW_SH_POLLS && x.sh_n == 0 && x.flags == ELEVEL7 && !f.running && (f.ca.ctl & 1u) && f.win2 == 0);
+		}
+	}
+	/* the token unchanged (the firmware never answers): timeout after SWW_SH_POLLS reads, 5 s of delay, logged */
+	re_put(&f, &x);
+	f.sh_bp = last;
+	nrd = (uint32_t)f.clock_us;
+	CHECK(re_run(&x) == 0 && x.sh_addr == 0 && x.sh_polls == 100 && !f.running && f.nrun == 1 && f.win2 == 0 && x.flags == ELEVEL7);
+	CHECK(f.clock_us - nrd >= 99ul * 50000ul && f.clock_us - nrd < 99ul * 50000ul + 10000ul);
+	snprintf(t, sizeof t, "W16 no shared-area address after 100 reads (last RAM word %#010x, token %#010x)", x.tok, x.tok);
+	CHECK(strstr(logbuf, t) != 0 && strstr(logbuf, "level 7 done") == 0);         /* swl_w17 alone does not print the stage line */
+
+	/* the link dies during the poll (all ones): a stop, the CA and window restore groups put the ARM into reset and cfg 0x84 back */
+	re_put(&f, &x);
+	f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = 0xFFFFFFFFu;
+	CHECK(re_run(&x) == -SWW_E_DEAD && x.stop_code == SWW_E_DEAD && x.row == 16 && x.restore == SWW_RS_OK && !f.running && (f.ca.ctl & 1u) && f.win2 == 0 && !(x.flags & SWF_W16));
+	CHECK(f.nw == n6 + 5 + 1 + 2 && f.lastw.space == SWW_CFG && f.lastw.off == SWW_CFG_WIN2 && f.lastw.val == 0 && strstr(logbuf, "W16 STOP: dead read") != 0);   /* restore: RESET_CTL := 1, cfg 0x84 := 0 */
+
+	/* the whole run E with W15 refused by its checks: no release */
+	re_put(&f, &x);
+	ramarr[0] = PAT;                                                /* backplane 0 no longer holds the vector */
+	CHECK(re_run(&x) == -SWW_E_STATE && f.nw == n6 && f.nrun == 0 && strstr(logbuf, "W15 backplane 0 holds 0xa5a5a5a5, not the reset vector 0xea000010") != 0);
+	re_put(&f, &x);
+	imgbuf[len / 2] ^= 1;
+	CHECK(re_run(&x) == -SWW_E_IMG && f.nw == n6 && f.nrun == 0);
+	imgbuf[len / 2] ^= 1;
+	re_put(&f, &x);
+	x.pin_len = 0;
+	CHECK(re_run(&x) == -SWW_E_IMG && f.nw == n6 && f.nrun == 0);
+	re_put(&f, &x);
+	f.ca.ioctl = 0x1u;                                              /* not the halted state W6 left: the first W15 store refuses (companion) */
+	CHECK(re_run(&x) == -SWW_E_COMP && f.nrun == 0 && f.nw == n6 + 1);
+
+	/* every read of run E failing once and every store failing / dropped / corrupted once: never a running ARM at the end, every store allowed */
+	re_put(&f, &x);
+	f.sh_bp = last; f.fw_up_us = 120000u; f.fw_sh = 0x0049a000u;
+	nrd = f.nrd; nst = f.nw;
+	CHECK(re_run(&x) == 0);
+	nrd = f.nrd - nrd; nst = f.nw - nst;
+	CHECK(nst == 9 && nrd > 40);
+	for (k = 1; k <= nrd; k++) {
+		re_put(&f, &x);
+		f.sh_bp = last; f.fw_up_us = 120000u; f.fw_sh = 0x0049a000u;
+		f.fail_rd_at = f.nrd + k;
+		(void)re_run(&x);
+		CHECK(!f.running && all_allowed(&f) && f.win2 == 0);
+		CHECK(!x.stopped || x.restore == SWW_RS_OK || x.restore == SWW_RS_NONE);
+	}
+	for (k = 1; k <= nst; k++) {
+		unsigned mode;
+		for (mode = 0; mode < 3; mode++) {
+			re_put(&f, &x);
+			f.sh_bp = last; f.fw_up_us = 120000u; f.fw_sh = 0x0049a000u;
+			if (mode == 0) f.fail_wr_at = f.nw + k;
+			else if (mode == 1) f.drop_at = f.nw + k;
+			else f.corrupt_at = f.nw + k;
+			(void)re_run(&x);
+			CHECK(all_allowed(&f));
+			/* a dropped or corrupted W17 store is the one case the ARM can stay released: the stage reports it (no "back in reset" with reset_ctl 0x1) */
+			CHECK(!f.running || (x.row == 17 && strstr(logbuf, "reset_ctl 0x1") == 0));
+		}
+	}
+
+	/* the gates of the run E tuples */
+	re_put(&f, &x);
+	x.level = 6;
+	f.win0 = SWW_WIN_CA7WRAP;
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_CTL, 1u) == -SWW_E_REPEAT && f.nw == n6);        /* level 6: the run A tuple is consumed, run E is not reachable */
+	re_put(&f, &x);
+	x.level = 6;
+	f.win0 = SWW_WIN_CA7WRAP;
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_IOCTL, 0x3u) == -SWW_E_LEVEL && f.nw == n6 && f.nrun == 0);
+	re_put(&f, &x);
+	x.flags &= ~SWF_W14;
+	f.win0 = SWW_WIN_CA7WRAP;
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_CTL, 1u) == -SWW_E_PHASE && f.nw == n6);          /* needs W14 */
+	re_put(&f, &x);
+	f.win0 = SWW_WIN_CA7WRAP;
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_IOCTL, 0x1u) == -SWW_E_ORDER && f.nw == n6 && f.nrun == 0);   /* the end store needs its predecessors */
+	re_put(&f, &x);
+	f.win0 = SWW_WIN_CA7WRAP;
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_IOCTL, 0x0u) == -SWW_E_DENIED && f.nw == n6);            /* IOCTL 0 (clock off) is no tuple */
+	re_put(&f, &x);
+	f.win0 = SWW_WIN_SMWRAP;
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_SMWRAP, SWL_AGENT_RESET_CTL, 1u) == -SWW_E_REPEAT && f.nw == n6);           /* the SYS_MEM wrapper gets no run E store */
+	re_put(&f, &x);
+	CHECK(swl_wr(&x, SWW_CFG, 0, SWW_CFG_WIN2, SWW_WIN_TAIL) == -SWW_E_PHASE && f.nw == n6);                      /* the W16 window needs W15 */
+	re_put(&f, &x);
+	f.win0 = SWW_WIN_CA7WRAP;
+	x.flags |= SWF_W15;
+	x.done |= ((uint64_t)1 << SWT_CA_RUN_ASSERT) | ((uint64_t)1 << SWT_CA_RUN_MID) | ((uint64_t)1 << SWT_CA_RUN_RELEASE) | ((uint64_t)1 << SWT_CA_RUN_END);
+	CHECK(swl_wr(&x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_CTL, 1u) == -SWW_E_PHASE && f.nw == n6);          /* with W15 done, RESET_CTL := 1 is the W17 tuple, which needs W16 */
+}
+
 /* review 0132 F2: W14 runs only when stage 1 listed PCIe core 0x83c with rev < 74 or == 128 (DHD does not read the DAR security register there, dhd_pcie.c:11735-11745) */
 static void rev_gate(void)
 {
@@ -2238,6 +2432,7 @@ int main(void)
 	runc_deny_sweep();
 	rund();
 	rund_board();
+	rune();
 	if (fails) {
 		fprintf(stderr, "RESULT: FAIL wlan_wr_host_test (%u checks)\n", fails);
 		return 1;

@@ -85,3 +85,10 @@ the 0151-0153 replay (fires ~200 s after AppleCLCD start = ~+340 s; the 300 s ru
   W13 rTLV 0x49ad38..0x49adbc (128 B, type 0xfeedc0de) read back; window restored
 - "SWEET WLAN: stage 3 level 5 done vars=21052 token=0xeb70148f crc=0x292de73a"; no refusal, no panic; UI up (lock screen), phone back in fastboot
 - Next: level 6 (release the ARM CA7 reset at the pinned vector = the chip runs the firmware): needs the user's OK.
+
+## Run wd6-oriole1 (2026-10-27, kernel xnu-465042e = 0145-0153, sweetwlan=6 sweetreplay=WLAN, --duration 480): Wi-Fi level 6 PASS
+- levels 1-5 as in wd5-oriole1, then W14: backplane 0 read 0xba3ef000 (bit 1 clear: not secured), := 0xb8cef214 (word 0 of the pinned oriole
+  firmware; as halfwords f214 b8ce = a Thumb-2 B.W, a plausible CA7 reset vector [obs + guess]), read back 0xb8cef214
+- "SWEET WLAN: stage 3 level 6 done w14 old=0xba3ef000 new=0xb8cef214 vars=21052 token=0xeb70148f crc=0x292de73a"; no panic
+- NOTE: level 6 (patch 0132) only stores the reset vector; the ARM stays halted (W6 IOCTL 0x21). Releasing it = patch 0154 (level 7: W15 release,
+  W16 shared-area poll, W17 back into reset).

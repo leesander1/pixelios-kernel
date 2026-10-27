@@ -26,6 +26,7 @@ PATCH0130 = os.path.join(ROOT, "xnu", "patches", "0130-sweet-wlan-image-copy.pat
 PATCH0131 = os.path.join(ROOT, "xnu", "patches", "0131-sweet-wlan-nvram-rtlv.patch")
 PATCH0132 = os.path.join(ROOT, "xnu", "patches", "0132-sweet-wlan-reset-vector.patch")
 PATCH0148 = os.path.join(ROOT, "xnu", "patches", "0148-sweet-wlan-fw-pin-per-board.patch")
+PATCH0154 = os.path.join(ROOT, "xnu", "patches", "0154-sweet-wlan-ca7-release.patch")
 TEST = os.path.join(ROOT, "shim", "wlan_wr_host_test.c")
 TEST_NV = os.path.join(ROOT, "shim", "wlan_nv_host_test.c")
 HDR_PATH = "bsd/dev/sweet_wlan_wr.h"
@@ -64,7 +65,7 @@ def apply_chain(path, patches):
 
 
 def final_header():
-    return apply_chain(HDR_PATH, (PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148))
+    return apply_chain(HDR_PATH, (PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148, PATCH0154))
 
 
 def glue_before():
@@ -72,7 +73,7 @@ def glue_before():
 
 
 def glue_after():
-    return apply_chain(GLUE_PATH, (PATCH0120, PATCH0128, PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148))
+    return apply_chain(GLUE_PATH, (PATCH0120, PATCH0128, PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148, PATCH0154))
 
 
 def new_file(patch, path):
@@ -611,6 +612,37 @@ MUTANTS = [
     ("run D W14: stored value is not image word 0", [("rc = swl_wr(x, SWW_BAR2, 0, 0, swl_img_word(x, 0));", "rc = swl_wr(x, SWW_BAR2, 0, 0, swl_img_word(x, 1));")], None),
     ("run D swl_wr: read-back word not kept (failure)", [("\t\tx->rb = rb;     /* run D logs the word that did not stick */\n", "")], None),
     ("run D swl_wr: read-back word not kept (success)", [("\t}\n\tx->rb = rb;\n", "\t}\n")], None),
+    # --- run E (patch 0154): the CA7 release, the shared-area poll, the CA7 back into reset
+    ("run E tuple: assert without the halted companion", [(".off = SWL_AGENT_RESET_CTL, .val = 1u, .vmask = 1u,\n\t                        .coff = SWL_AGENT_IOCTL, .cmask = SWW_IOCTL_MASK, .cval = 0x21u, .need = SWF_W14 },", ".off = SWL_AGENT_RESET_CTL, .val = 1u, .vmask = 1u,\n\t                        .need = SWF_W14 },")], None),
+    ("run E tuple: assert without phase", [(".cval = 0x21u, .need = SWF_W14 },", ".cval = 0x21u, .need = 0 },")], None),
+    ("run E tuple: mid store at run 4", [("[SWT_CA_RUN_MID]     = { .row = 15, .run = 5,", "[SWT_CA_RUN_MID]     = { .row = 15, .run = 4,")], None),
+    ("run E tuple: end store without predecessor", [(".pred1 = SWT_CA_RUN_RELEASE + 1, ", "")], None),
+    ("run E tuple: end store from any old value", [(".vmask = SWW_IOCTL_MASK, .omask = SWW_IOCTL_MASK, .oval = 0x3u, .coff = SWL_AGENT_RESET_CTL, .cmask = 1u, .cval = 0u, .need = SWF_W14 },", ".vmask = SWW_IOCTL_MASK, .coff = SWL_AGENT_RESET_CTL, .cmask = 1u, .cval = 0u, .need = SWF_W14 },")], None),
+    ("run E tuples: W15 arms no restore", [("[SWT_CA_RUN_ASSERT]  = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA,", "[SWT_CA_RUN_ASSERT]  = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = 0,"),
+                                            ("[SWT_CA_RUN_MID]     = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA,", "[SWT_CA_RUN_MID]     = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = 0,"),
+                                            ("[SWT_CA_RUN_RELEASE] = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA,", "[SWT_CA_RUN_RELEASE] = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = 0,"),
+                                            ("[SWT_CA_RUN_END]     = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA,", "[SWT_CA_RUN_END]     = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = 0,")], None),
+    ("run E tuple: W17 store needs no W16", [(".off = SWL_AGENT_RESET_CTL, .val = 1u, .vmask = 1u, .need = SWF_W16 },", ".off = SWL_AGENT_RESET_CTL, .val = 1u, .vmask = 1u, .need = SWF_W14 },")], None),
+    ("run E done mask: 32 bits", [("\tuint64_t done;", "\tuint32_t done;")], None),
+    ("run E W15: image not checked again", [("\tSWW_TRY(swl_img_check(x));\n\tSWW_TRY(swl_fw_pin(x));\n\tSWW_RD(x, SWW_BAR2, 0, 0, v);", "\tSWW_TRY(swl_fw_pin(x));\n\tSWW_RD(x, SWW_BAR2, 0, 0, v);")], None),
+    ("run E W15: pin not checked again", [("\tSWW_TRY(swl_fw_pin(x));\n\tSWW_RD(x, SWW_BAR2, 0, 0, v);", "\tSWW_RD(x, SWW_BAR2, 0, 0, v);")], None),
+    ("run E W15: vector at 0 not compared", [("\tif (v != swl_img_word(x, 0)) {\n\t\tprintf(\"SWEET WLAN: W15", "\tif (0) {\n\t\tprintf(\"SWEET WLAN: W15")], None),
+    ("run E W15: CPUHALT kept", [("swl_core_reset(x, SWW_WIN_CA7WRAP, 0x3u, 0x1u)", "swl_core_reset(x, SWW_WIN_CA7WRAP, 0x3u, 0x21u)")], None),
+    ("run E W16: CA restore not armed at entry", [("\tx->armed = SWW_RG_CA;   /* the ARM runs: a stop anywhere in W16, also before the first store, puts it back into reset */\n", "")], None),
+    ("run E W17: CA restore not armed at entry", [("\tx->armed = SWW_RG_CA;   /* a stop before or at the RESET_CTL store still puts the ARM into reset (the restore makes the same store) */\n", "")], None),
+    ("run E W16: all ones not a stop", [("\t\tif (v == 0xFFFFFFFFu) {\n\t\t\treturn swl_stop(x, SWW_E_DEAD);", "\t\tif (0) {\n\t\t\treturn swl_stop(x, SWW_E_DEAD);")], None),
+    ("run E W16: unaligned address accepted", [("&& v < end - 4u && (v & 3u) == 0) {", "&& v < end - 4u) {")], None),
+    ("run E W16: address below RAM accepted", [("if (v != x->tok && v >= SWW_RAM_BASE && ", "if (v != x->tok && ")], None),
+    ("run E W16: the last word itself accepted", [("&& v < end - 4u && (v & 3u) == 0) {", "&& v <= end - 4u && (v & 3u) == 0) {")], None),
+    ("run E W16: window not restored", [("\tSWW_TRY(swl_wr(x, SWW_CFG, 0, SWW_CFG_WIN2, 0));\n\tif (x->sh_addr != 0", "\tif (x->sh_addr != 0")], None),
+    ("run E W16: 99 reads", [("#define SWW_SH_POLLS    100u", "#define SWW_SH_POLLS    99u")], None),
+    ("run E W16: no delay between reads", [("\t\tif (i + 1u < SWW_SH_POLLS) {\n\t\t\tswl_delay(x, SWW_SH_US);", "\t\tif (0) {\n\t\t\tswl_delay(x, SWW_SH_US);")], None),
+    ("run E W16: struct read across the end of window 0", [("a - win > (win ? SWW_LAST_HI_MAX : SWW_TCM_BYTES - 4u)", "a - win > (win ? SWW_LAST_HI_MAX : SWW_TCM_BYTES)")], None),
+    ("run E W16: struct read past ram_end", [("if (a >= end || a < win", "if (a > end || a < win")], None),
+    ("run E W17: reset not asserted", [("\tSWW_TRY(swl_wr(x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_CTL, 1u));\n\tswl_delay(x, 10);", "\tswl_delay(x, 10);")], None),
+    ("run E stage: W15 at level 6", [("if (x->level >= SWW_LEVEL0 + 5) {\n\t\trc = rc ? rc : swl_w15(x);", "if (x->level >= SWW_LEVEL0 + 4) {\n\t\trc = rc ? rc : swl_w15(x);")], None),
+    ("run E stage: W17 skipped", [("\t\trc = rc ? rc : swl_w17(x);\n", "")], None),
+    ("run E stage: final line shared address", [("x->level, x->sh_addr, x->sh_polls, x->sh_n,", "x->level, 0u, x->sh_polls, x->sh_n,")], None),
 ]
 
 
@@ -835,6 +867,32 @@ int main(void)
 		}
 	}
 	for (int i = 0; i < 4; i++) tcm[i] = 0x10000000u * 6 + (uint32_t)i;
+	/* run E (patch 0154): a CA7 IOCTL store with CPUHALT (0x20) clear only at stage 3 level 7 or above and only after the reset vector store (rv_done); with CPUHALT set, and on the
+	 * SYS_MEM wrapper, the IOCTL rules stay as they were; RESET_CTL is not affected */
+	for (int l3 = 0; l3 < 9; l3++) {
+		static const uint32_t iov[6] = { 0x1u, 0x3u, 0x21u, 0x23u, 0u, 0x20u };
+
+		for (int done = 0; done < 2; done++) {
+			for (unsigned wi = 2; wi < 4; wi++) {
+				for (unsigned vi = 0; vi < 6; vi++) {
+					for (uint32_t off = 0x408; off <= 0x800; off += 0x3F8) {
+						hw.l3 = l3;
+						hw.rv_done = done;
+						cfg[0x80 / 4] = wins[wi];
+						mem[off / 4] = 0x55555555u;
+						int r = sw3_wr(&hw, SWW_BAR0, wins[wi], off, iov[vi]);
+						int want = !(wins[wi] == SWW_WIN_CA7WRAP && off == 0x408 && !(iov[vi] & 0x20u)) || (l3 >= 7 && done);
+						if ((r == 0) != want || (r == 0 && mem[off / 4] != iov[vi]) || (r != 0 && mem[off / 4] != 0x55555555u)) {
+							if (bad++ < 20) printf("BAD run E l3 %d rv_done %d win %#x off %#x val %#x: ret %d, want accept %d\n", l3, done, wins[wi], off, iov[vi], r, want);
+						}
+						acc += r == 0;
+					}
+				}
+			}
+		}
+	}
+	hw.l3 = 0;
+	hw.rv_done = 0;
 	printf("%s accepted %d bad %d\n", bad ? "FAIL" : "PASS", acc, bad);
 	return bad != 0;
 }
@@ -901,6 +959,13 @@ GLUE_MUTANTS = [
     ("reset vector: any value", [("h->rv_ok && !h->rv_done && v == h->rv", "h->rv_ok && !h->rv_done")]),
     ("reset vector: any window", [("(win == 0 && off == 0 && h->l3", "(off == 0 && h->l3")]),
     ("reset vector: any of the first words", [("off == 0 && h->l3 >= 6", "off < 16 && h->l3 >= 6")]),
+    ("CA7 release: check removed", [("\tif (space == SWW_BAR0 && win == SWW_WIN_CA7WRAP && off == SWL_AGENT_IOCTL && !(v & SWW_CPUHALT) && !(h->l3 >= 7 && h->rv_done)) {\n\t\treturn -1;\n\t}\n", "")]),
+    ("CA7 release: no level gate", [("!(h->l3 >= 7 && h->rv_done)", "!h->rv_done")]),
+    ("CA7 release: level 6 is enough", [("h->l3 >= 7 && h->rv_done", "h->l3 >= 6 && h->rv_done")]),
+    ("CA7 release: no reset-vector gate", [("!(h->l3 >= 7 && h->rv_done)", "!(h->l3 >= 7)")]),
+    ("CA7 release: on both wrappers", [("win == SWW_WIN_CA7WRAP && off == SWL_AGENT_IOCTL && !(v & SWW_CPUHALT)", "off == SWL_AGENT_IOCTL && !(v & SWW_CPUHALT)")]),
+    ("CA7 release: RESET_CTL too", [("win == SWW_WIN_CA7WRAP && off == SWL_AGENT_IOCTL && !(v & SWW_CPUHALT)", "win == SWW_WIN_CA7WRAP && !(v & SWW_CPUHALT)")]),
+    ("CA7 release: CPUHALT bit 0x2", [("!(v & SWW_CPUHALT) && !(h->l3", "!(v & 0x2u) && !(h->l3")]),
     ("reset vector: any word below the RAM base", [("off == 0 && h->l3 >= 6", "off < SWW_RAM_BASE && h->l3 >= 6")]),
     ("BAR2 store below the RAM base", [("(win == 0 && off >= SWW_RAM_BASE)", "(win == 0)")]),
     ("BAR2 store one word below the RAM base", [("off >= SWW_RAM_BASE)", "off >= SWW_RAM_BASE - 4u)")]),

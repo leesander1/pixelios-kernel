@@ -1,0 +1,306 @@
+SWEET WLAN stage 3 run E (patch 0154, docs/research/37 s.6 step 4 and s.7), boot-arg sweetwlan=7 (= run D of 0132, then rows W15..W17; levels 1-6 behave as before).
+W15: the image, its pinned identity and the reset vector at backplane 0 are checked again, then the CA7 wrapper gets the _ai_core_reset of W4 (RESET_CTL 1, IOCTL 0x3, RESET_CTL 0, IOCTL 0x1 = CPUHALT clear) as DHD download_state(FALSE) does (dhd_pcie.c:10343-10346, aiutils.c:1242-1317; brcmfmac resetcore(core, CPUHALT, 0, 0), brcmfmac-chip.c:1357-1358): the firmware runs. Only from the halted state W6 left (IOCTL 0x21).
+W16: cfg 0x84 on the tail window, the last RAM word (the length token of W12) read every 50 ms up to 100 times (brcmfmac-pcie.c:113, 1740-1768); a 4-aligned value inside RAM below the last word is the firmware's pciedev_shared_t address, and 16 words there are logged raw (layout: research 37 U13). A timeout is a result, all-ones a stop. cfg 0x84 back at 0.
+W17: the CA7 back into reset (RESET_CTL := 1, the CA restore value): the firmware runs at most ~5 s. W16 and W17 arm the CA restore group from their start, so a stop anywhere after the release puts the ARM back into reset.
+Pure part (bsd/dev/sweet_wlan_wr.h): 7 new deny-by-default tuples (run 5), x->done widened to 64 bits (35 tuples), SWW_CPUHALT 0x20, SWW_SH_POLLS/US/WORDS, swl_w15/w16/w17, swl_sh_read.
+Glue (bsd/dev/sweet_wlan.c): level 7 accepted; sw3_wr() refuses a CA7 IOCTL store with CPUHALT clear unless the level is 7 and the reset vector store has been made (independent of the tuples).
+Final line: "SWEET WLAN: stage 3 level 7 done shared=<hex> reads=<n> words=<n> vars=<n> token=<hex>".
+Tests: shim/wlan_wr_host_test.c rune() (every read failing once and every store failing/dropped/corrupted once: the fake ARM never stays released except a dropped/corrupted W17 store, which the log shows), tools/test_wlan_wr_mutants.py. HW-WRITE path: not yet independently reviewed.
+
+diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
+--- a/bsd/dev/sweet_wlan_wr.h
++++ b/bsd/dev/sweet_wlan_wr.h
+@@ -11,6 +11,8 @@
+  * .run and a step function, the checks in swl_wr() do not change.
+  * Run B (patch 0130, sweetwlan=4) copies the image; run C (patch 0131, sweetwlan=5) stores the NVRAM text, the length token and the rTLV below ram_end (rows W11..W13). The words of run C come
+  * from the state (swl_tw_word), not from the caller, and their addresses from ram_end and varsize (swl_geo_get): swl_wr() recomputes both for every store.
++ * Run E (patch 0154, sweetwlan=7) releases the CA7 from CPUHALT after W14 (row W15), polls the last RAM word for the firmware's shared-area address (W16, reads only) and puts the ARM back into
++ * reset (W17): the firmware runs for at most SWW_SH_POLLS * SWW_SH_US.
+  *
+  * swl_wr() checks, in this order: not stopped, tuple exists (space, window, offset, value), run <= level - 2, tuple not consumed,
+  * predecessor done, phase flags set, bank rule state, the 0124 preconditions re-read (link L0, ATU r0/r1/r2, EP Command, BAR0),
+@@ -89,6 +91,10 @@
+ #define SWW_FW_LEN_ORIOLE 1607051u
+ #define SWW_FW_CRC_ORIOLE 0x54b872bfu
+ #define SWW_SEC_SBOOT   0x2u            /* DAR_SEC_SBOOT_MASK, include_pcie_core.h:1161; tested on the word at bp 0 because PCIe core 0x83c rev 72 < 74 (dhd_pcie.c:11741, 10208-10222) */
++#define SWW_CPUHALT     0x20u           /* ARMCR4_BCMA_IOCTL_CPUHALT, brcmfmac-chip.c:78, used for the CA7 at :1331, :1358; DHD SICF_CPUHALT g4389-include_siutils.h:306 (research 37 U7) */
++#define SWW_SH_POLLS    100u            /* run E: the shared-area poll, BRCMF_PCIE_FW_UP_TIMEOUT 5000 ms in 50 ms steps (brcmfmac-pcie.c:113, 1740-1768; DHD: 5 s, dhd_pcie.c:13641-13651) */
++#define SWW_SH_US       50000u
++#define SWW_SH_WORDS    16u             /* words of pciedev_shared_t logged raw (the layout is research 37 U13, not decoded here) */
+ #define SWW_CORE_PCIE2  0x83c           /* PCIE2_CORE_ID, include_hndsoc.h:200; the core whose rev is DHD's buscorerev */
+ _Static_assert(SWW_FW_LEN == SWW_IMG_MAX, "the pinned firmware is the largest accepted image");
+ _Static_assert(SWW_FW_LEN_ORIOLE <= SWW_IMG_MAX, "every pinned firmware fits the image bound");
+@@ -143,6 +149,9 @@
+ #define SWF_RTLV    0x4000u     /* the rTLV is stored and read back (cfg 0x84 not yet back at 0) */
+ #define SWF_W13     0x8000u     /* cfg 0x84 is back at 0 */
+ #define SWF_W14     0x10000u    /* run D: the reset vector is stored at backplane address 0 and read back */
++#define SWF_W15     0x20000u    /* run E: the CA7 is out of reset with CPUHALT clear (the firmware runs) */
++#define SWF_W16     0x40000u    /* the shared-area poll ended (address found or timeout) and cfg 0x84 is back at 0 */
++#define SWF_W17     0x80000u    /* the CA7 is back in reset */
+ 
+ #define SWW_RG_ATU2 1u          /* restore groups, armed by the first store of a tuple that names one */
+ #define SWW_RG_SM   2u
+@@ -195,9 +204,13 @@
+ 	SWT_WIN2_TAIL_C = SWT_N_B, SWT_NV_VARS, SWT_NV_TOKEN, SWT_NV_RTLV, SWT_WIN2_ZERO_C, /* W11 window, W11 vars, W12, W13, W13 window restore */
+ 	SWT_N_C,                                                        /* the run C tuples end here (run D follows) */
+ 	SWT_RESET0 = SWT_N_C,                                           /* W14 */
++	SWT_N_D,                                                        /* the run D tuples end here (run E follows) */
++	SWT_CA_RUN_ASSERT = SWT_N_D, SWT_CA_RUN_MID, SWT_CA_RUN_RELEASE, SWT_CA_RUN_END,       /* W15 */
++	SWT_WIN2_TAIL_E, SWT_WIN2_ZERO_E,                               /* W16 window, W16 window restore */
++	SWT_CA_STOP,                                                    /* W17 */
+ 	SWT_N
+ };
+-_Static_assert(SWT_N <= 32, "x->done is a 32-bit tuple mask");
++_Static_assert(SWT_N <= 64, "x->done is a 64-bit tuple mask");
+ 
+ /*
+  * The write allowlist. Deny by default (CR-25): a store that matches no row does not happen. Values: ATU region 2 in the order of
+@@ -265,6 +278,23 @@
+ 
+ 	/* Run D (row W14, once): the image's first dword at backplane address 0 (BAR2 window 0, offset 0), only after W13 (cfg 0x84 is back at 0). The value is not in the table: swl_wr() takes it from the pinned image. */
+ 	[SWT_RESET0]     = { .row = 14, .run = 4, .space = SWW_BAR2, .flags = SWT_ONCE | SWT_RV, .win = 0, .off = 0, .vmask = 0xFFFFFFFFu, .omask = SWW_SEC_SBOOT, .oval = 0, .need = SWF_W13 },
++
++	/* Run E (rows W15..W17). W15: DHD download_state(FALSE) ends with si_core_reset(sih, 0, 0) on the CA7 (dhd_pcie.c:10343-10346, aiutils.c:1242-1317; brcmfmac resetcore(core, CPUHALT, 0, 0),
++	 * brcmfmac-chip.c:1357-1358): the _ai_core_reset of W4 (IOCTL 0x3 then 0x1) on the CA7 wrapper, only after W14 and only from the halted state W6 left (IOCTL 0x21). Every W15 tuple arms the CA
++	 * group, so a stop puts the ARM back into reset. W16: cfg 0x84 on the tail window for the poll of the last RAM word and back (the window tuple also arms the CA group). W17: RESET_CTL := 1 again. */
++	[SWT_CA_RUN_ASSERT]  = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA, .flags = SWT_ONCE, .win = SWW_WIN_CA7WRAP, .off = SWL_AGENT_RESET_CTL, .val = 1u, .vmask = 1u,
++	                        .coff = SWL_AGENT_IOCTL, .cmask = SWW_IOCTL_MASK, .cval = 0x21u, .need = SWF_W14 },
++	[SWT_CA_RUN_MID]     = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA, .flags = SWT_ONCE, .pred1 = SWT_CA_RUN_ASSERT + 1, .win = SWW_WIN_CA7WRAP, .off = SWL_AGENT_IOCTL, .val = 0x3u,
++	                        .vmask = SWW_IOCTL_MASK, .coff = SWL_AGENT_RESET_CTL, .cmask = 1u, .cval = 1u, .need = SWF_W14 },
++	[SWT_CA_RUN_RELEASE] = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA, .flags = SWT_ONCE, .pred1 = SWT_CA_RUN_MID + 1, .win = SWW_WIN_CA7WRAP, .off = SWL_AGENT_RESET_CTL, .val = 0u,
++	                        .vmask = 1u, .coff = SWL_AGENT_IOCTL, .cmask = SWW_IOCTL_MASK, .cval = 0x3u, .need = SWF_W14 },
++	[SWT_CA_RUN_END]     = { .row = 15, .run = 5, .space = SWW_BAR0, .rgrp = SWW_RG_CA, .flags = SWT_ONCE, .pred1 = SWT_CA_RUN_RELEASE + 1, .win = SWW_WIN_CA7WRAP, .off = SWL_AGENT_IOCTL, .val = 0x1u,
++	                        .vmask = SWW_IOCTL_MASK, .omask = SWW_IOCTL_MASK, .oval = 0x3u, .coff = SWL_AGENT_RESET_CTL, .cmask = 1u, .cval = 0u, .need = SWF_W14 },
++	[SWT_WIN2_TAIL_E]    = { .row = 16, .run = 5, .space = SWW_CFG, .rgrp = SWW_RG_W84 | SWW_RG_CA, .flags = SWT_ONCE | SWT_TAIL, .off = SWW_CFG_WIN2, .val = SWW_WIN_TAIL, .vmask = 0xFFFFFFFFu,
++	                        .omask = 0xFFFFFFFFu, .oval = 0, .need = SWF_W15 },
++	[SWT_WIN2_ZERO_E]    = { .row = 16, .run = 5, .space = SWW_CFG, .rgrp = SWW_RG_CA, .flags = SWT_ONCE | SWT_TAIL, .pred1 = SWT_WIN2_TAIL_E + 1, .off = SWW_CFG_WIN2, .val = 0, .vmask = 0xFFFFFFFFu,
++	                        .omask = 0xFFFFFFFFu, .oval = SWW_WIN_TAIL, .need = SWF_W15 },
++	[SWT_CA_STOP]        = { .row = 17, .run = 5, .space = SWW_BAR0, .flags = SWT_ONCE, .win = SWW_WIN_CA7WRAP, .off = SWL_AGENT_RESET_CTL, .val = 1u, .vmask = 1u, .need = SWF_W16 },
+ };
+ 
+ /* The read allowlist (every read of run A, including the ones of the preconditions). */
+@@ -313,7 +343,8 @@
+ 	const struct swl_wbus *b;
+ 	int level, stopped, stop_code, restore;
+ 	unsigned row, nbank, nrb, nb, nstore;
+-	uint32_t done, flags, armed, ram_bytes;
++	uint64_t done;                                  /* consumed tuples, bit t = swl_wt[t] (patch 0154: 64 bits) */
++	uint32_t flags, armed, ram_bytes;
+ 	const uint8_t *img;                             /* run B: the firmware image (container entry, CRC-checked by 0128) */
+ 	uint32_t img_len, img_crc, img_next, img_crc_rb;        /* bytes, the container's CRC32, index of the next word swl_wr() accepts (= words stored), CRC32 of the read-back */
+ 	const uint8_t *nv_src;                          /* run C: the NVRM container entry (CRC-checked by 0128 and again by swl_nv_prep) */
+@@ -324,6 +355,8 @@
+ 	uint8_t rtlv[SWW_RTLV_RNG];                     /* run C: the random bytes of the rTLV */
+ 	uint32_t w14_old, rb;                           /* run D: the word read at address 0 before the store; the word swl_wr() last read back */
+ 	uint32_t pin_len, pin_crc;                      /* patch 0148: the board's pinned FW identity (swl_fw_pin_for); 0 = unknown board, level 6 refused */
++	uint32_t sh_addr, sh_polls, sh_n;               /* run E: the shared-area address (0 = none seen), reads made, words logged */
++	uint32_t sh[SWW_SH_WORDS];
+ };
+ 
+ static inline const char *
+@@ -591,7 +624,7 @@
+ {
+ 	int first = swl_wr_ok(space, win, off, val), t = first, n;
+ 
+-	while (t >= 0 && (((swl_wt[t].flags & SWT_ONCE) && (x->done & (1u << t))) || ((swl_wt[t].flags & SWT_TW) && swl_wt[t].kind != swl_tw_kind(x, win + off)))) {
++	while (t >= 0 && (((swl_wt[t].flags & SWT_ONCE) && (x->done & ((uint64_t)1 << t))) || ((swl_wt[t].flags & SWT_TW) && swl_wt[t].kind != swl_tw_kind(x, win + off)))) {
+ 		n = swl_wr_ok_from((unsigned)t + 1u, space, win, off, val);
+ 		if (n <= t || (int)swl_wt[n].run > x->level - SWW_LEVEL0) {      /* n < 0: none; the search only moves forward */
+ 			return first;
+@@ -739,10 +772,10 @@
+ 	if ((int)p->run > x->level - SWW_LEVEL0) {
+ 		return swl_stop(x, SWW_E_LEVEL);
+ 	}
+-	if ((p->flags & SWT_ONCE) && (x->done & (1u << t))) {
++	if ((p->flags & SWT_ONCE) && (x->done & ((uint64_t)1 << t))) {
+ 		return swl_stop(x, SWW_E_REPEAT);
+ 	}
+-	if (p->pred1 && !(x->done & (1u << (p->pred1 - 1u)))) {
++	if (p->pred1 && !(x->done & ((uint64_t)1 << (p->pred1 - 1u)))) {
+ 		return swl_stop(x, SWW_E_ORDER);
+ 	}
+ 	if ((x->flags & p->need) != p->need) {
+@@ -816,7 +849,7 @@
+ 		x->tn[p->kind]++;
+ 		return 0;
+ 	}
+-	x->done |= 1u << t;
++	x->done |= (uint64_t)1 << t;
+ 	if (p->flags & SWT_BANK) {
+ 		x->nbank++;
+ 	}
+@@ -1398,6 +1431,113 @@
+ 	return swl_done(x, SWF_W14);
+ }
+ 
++/* W15: the CA7 leaves CPUHALT (DHD download_state(FALSE), dhd_pcie.c:10343-10346: si_core_reset(sih, 0, 0) on the CA7): the image, its identity and the reset vector at backplane 0 are checked
++ * again first (AP-74), then the W4 sequence on the CA7 wrapper. From the last IOCTL store on the firmware runs. */
++static inline int
++swl_w15(struct swl_wx *x)
++{
++	uint32_t v;
++
++	x->row = 15;
++	SWW_TRY(swl_img_check(x));
++	SWW_TRY(swl_fw_pin(x));
++	SWW_RD(x, SWW_BAR2, 0, 0, v);
++	if (v != swl_img_word(x, 0)) {
++		printf("SWEET WLAN: W15 backplane 0 holds %#010x, not the reset vector %#010x\n", v, swl_img_word(x, 0));
++		return swl_stop(x, SWW_E_STATE);
++	}
++	SWW_TRY(swl_win(x, SWW_WIN_CA7WRAP));
++	SWW_TRY(swl_core_reset(x, SWW_WIN_CA7WRAP, 0x3u, 0x1u));
++	printf("SWEET WLAN: W15 CA7 released (CPUHALT clear), the firmware runs\n");
++	return swl_done(x, SWF_W15);
++}
++
++/* the shared-area words at backplane a (4-aligned, inside RAM) under BAR2 window win, as many as fit below ram_end and inside that window; reads only */
++static inline int
++swl_sh_read(struct swl_wx *x, uint32_t win)
++{
++	uint32_t a, end = SWW_RAM_BASE + x->ram_bytes;
++
++	while (x->sh_n < SWW_SH_WORDS) {
++		a = x->sh_addr + 4u * x->sh_n;
++		if (a >= end || a < win || a - win > (win ? SWW_LAST_HI_MAX : SWW_TCM_BYTES - 4u)) {
++			break;
++		}
++		SWW_RD(x, SWW_BAR2, win, a - win, x->sh[x->sh_n]);
++		x->sh_n++;
++	}
++	return 0;
++}
++
++/* W16: the firmware's handshake (dhd_pcie.c:13613-13705; brcmfmac-pcie.c:1740-1770): the last RAM word held the length token (W12); a running firmware replaces it with the address of its
++ * pciedev_shared_t. Read it every SWW_SH_US, at most SWW_SH_POLLS times, with cfg 0x84 on the tail window (as W11..W13); a 4-aligned value inside RAM below the last word is the address, and
++ * SWW_SH_WORDS words there are logged raw. A timeout is a result, not a stop; all-ones (link gone) is a stop. Nothing is stored apart from the window. */
++static inline int
++swl_w16(struct swl_wx *x)
++{
++	uint32_t v = 0, last, end = SWW_RAM_BASE + x->ram_bytes;
++	unsigned i, shown = 0;
++
++	x->row = 16;
++	x->armed = SWW_RG_CA;   /* the ARM runs: a stop anywhere in W16, also before the first store, puts it back into reset */
++	SWW_TRY(swl_wr(x, SWW_CFG, 0, SWW_CFG_WIN2, SWW_WIN_TAIL));
++	last = x->tok;
++	for (i = 0; i < SWW_SH_POLLS; i++) {
++		SWW_RD(x, SWW_BAR2, SWW_WIN_TAIL, end - 4u - SWW_WIN_TAIL, v);
++		x->sh_polls = i + 1u;
++		if (v != last && shown < 8u) {
++			printf("SWEET WLAN: W16 read %u (+%u ms) last RAM word %#010x\n", i, i * (SWW_SH_US / 1000u), v);
++			shown++;
++		}
++		last = v;
++		if (v == 0xFFFFFFFFu) {
++			return swl_stop(x, SWW_E_DEAD);
++		}
++		if (v != x->tok && v >= SWW_RAM_BASE && v < end - 4u && (v & 3u) == 0) {
++			x->sh_addr = v;
++			break;
++		}
++		if (i + 1u < SWW_SH_POLLS) {
++			swl_delay(x, SWW_SH_US);
++		}
++	}
++	if (x->sh_addr >= SWW_WIN_TAIL) {
++		SWW_TRY(swl_sh_read(x, SWW_WIN_TAIL));
++	}
++	SWW_TRY(swl_wr(x, SWW_CFG, 0, SWW_CFG_WIN2, 0));
++	if (x->sh_addr != 0 && x->sh_addr < SWW_WIN_TAIL) {
++		SWW_TRY(swl_sh_read(x, 0));
++	}
++	if (x->sh_addr == 0) {
++		printf("SWEET WLAN: W16 no shared-area address after %u reads (last RAM word %#010x, token %#010x)\n", x->sh_polls, v, x->tok);
++	} else {
++		printf("SWEET WLAN: W16 shared area at %#010x after %u reads, %u words:\n", x->sh_addr, x->sh_polls, x->sh_n);
++		for (i = 0; i < x->sh_n; i += 4u) {
++			printf("SWEET WLAN: W16 sh+%#04x %#010x %#010x %#010x %#010x\n", 4u * i, x->sh[i], i + 1u < x->sh_n ? x->sh[i + 1u] : 0, i + 2u < x->sh_n ? x->sh[i + 2u] : 0,
++			    i + 3u < x->sh_n ? x->sh[i + 3u] : 0);
++		}
++	}
++	return swl_done(x, SWF_W16);
++}
++
++/* W17: the ARM back into reset (RESET_CTL := 1, the CA restore value), whatever W16 saw: the firmware stops; the chip's RAM keeps what it wrote until the module power goes */
++static inline int
++swl_w17(struct swl_wx *x)
++{
++	uint32_t io, ctl, st;
++
++	x->row = 17;
++	x->armed = SWW_RG_CA;   /* a stop before or at the RESET_CTL store still puts the ARM into reset (the restore makes the same store) */
++	SWW_TRY(swl_win(x, SWW_WIN_CA7WRAP));
++	SWW_TRY(swl_wr(x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_CTL, 1u));
++	swl_delay(x, 10);
++	SWW_RD(x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_IOCTL, io);
++	SWW_RD(x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_CTL, ctl);
++	SWW_RD(x, SWW_BAR0, SWW_WIN_CA7WRAP, SWL_AGENT_RESET_ST, st);
++	printf("SWEET WLAN: W17 CA7 back in reset: ioctl %#x reset_ctl %#x reset_st %#x\n", io, ctl, st);
++	return swl_done(x, SWF_W17);
++}
++
+ /* run A: W0..W7 in order; 0 = done, else negative (STOPPED, restore state in x->restore) */
+ static inline int
+ swl_stage3(struct swl_wx *x)
+@@ -1455,10 +1595,19 @@
+ 	if (x->level >= SWW_LEVEL0 + 4) {
+ 		rc = rc ? rc : swl_w14(x);
+ 	}
++	if (x->level >= SWW_LEVEL0 + 5) {
++		rc = rc ? rc : swl_w15(x);
++		rc = rc ? rc : swl_w16(x);
++		rc = rc ? rc : swl_w17(x);
++	}
+ 	if (rc) {
+ 		printf("SWEET WLAN: stage 3 level %d stopped at W%u restore=%s\n", x->level, x->row, swl_rsname(x->restore));
+ 		return rc;
+ 	}
++	if (x->level >= SWW_LEVEL0 + 5) {
++		printf("SWEET WLAN: stage 3 level %d done shared=%#010x reads=%u words=%u vars=%u token=%#010x\n", x->level, x->sh_addr, x->sh_polls, x->sh_n, x->nv_varsize, x->tok);
++		return 0;
++	}
+ 	if (x->level >= SWW_LEVEL0 + 4) {
+ 		printf("SWEET WLAN: stage 3 level %d done w14 old=%#010x new=%#010x vars=%u token=%#010x crc=%#010x\n", x->level, x->w14_old, x->rb, x->nv_varsize, x->tok, x->nv_crc_rb);
+ 		return 0;
+diff --git a/bsd/dev/sweet_wlan.c b/bsd/dev/sweet_wlan.c
+--- a/bsd/dev/sweet_wlan.c
++++ b/bsd/dev/sweet_wlan.c
+@@ -12,6 +12,8 @@
+  * all through the same swl_wr(); the glue adds only the NVRM entry, a scratch buffer and sw3_rng() (read_random()).
+  * Patch 0132 (run D, sweetwlan=6 = run C + row W14): the image's first dword at backplane address 0 (BAR2 window 0, offset 0). The glue only allows that one word, at level 6, with the value the container
+  * entry holds (sw3_wr, independent of the header's tuple).
++ * Patch 0154 (run E, sweetwlan=7 = run D + rows W15..W17): the CA7 released from CPUHALT, the shared-area poll, the CA7 back into reset. The glue refuses a CA7 IOCTL store with CPUHALT clear unless
++ * the level is 7 and the reset vector store has been made (sw3_wr, independent of the header's tuples).
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -245,6 +247,10 @@
+ 	}
+ 	/* bind the BAR0 offset to its window: bankidx only on SYS_MEM, IOCTL/RESET_CTL only on the SYS_MEM wrapper or the CA7 wrapper (review 0125 R2-3) */
+ 	if (space == SWW_BAR0 && !(off == SWW_SM_BANKIDX ? win == SWW_WIN_SYSMEM : (win == SWW_WIN_SMWRAP || win == SWW_WIN_CA7WRAP))) {
++		return -1;
++	}
++	/* patch 0154: the CA7 runs only at level 7 and only after the reset vector is in place */
++	if (space == SWW_BAR0 && win == SWW_WIN_CA7WRAP && off == SWL_AGENT_IOCTL && !(v & SWW_CPUHALT) && !(h->l3 >= 7 && h->rv_done)) {
+ 		return -1;
+ 	}
+ 	p = sw3_ptr(h, space, off);
+@@ -313,7 +319,7 @@
+ 	x.nv_src_crc = sw_nv.crc;
+ 	x.nv = sw_nvbuf;
+ 	x.nv_cap = sizeof sw_nvbuf;
+-	printf("SWEET WLAN: stage 3 level %d starts (chip WRITES, run %s, docs/research/43)\n", level, level > 5 ? "D" : level > 4 ? "C" : level > 3 ? "B" : "A");
++	printf("SWEET WLAN: stage 3 level %d starts (chip WRITES, run %s, docs/research/43)\n", level, level > 6 ? "E" : level > 5 ? "D" : level > 4 ? "C" : level > 3 ? "B" : "A");
+ 	(void)swl_stage3(&x);
+ 	memset(x.rtlv, 0, sizeof x.rtlv);      /* the random bytes of the rTLV do not stay on the stack */
+ }
+@@ -339,7 +345,7 @@
+ 	if (!PE_parse_boot_argn("sweetwlan", &level, sizeof(level)) || level == 0) {
+ 		return;
+ 	}
+-	if (level > 6 || SecureDTLookupEntry(NULL, "/sweet-wlan", &node) != kSuccess ||
++	if (level > 7 || SecureDTLookupEntry(NULL, "/sweet-wlan", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "compatible", (void const **)&compat, &csize) != kSuccess ||
+ 	    compat == NULL || csize < sizeof(SW_COMPAT) || strncmp(compat, SW_COMPAT, sizeof(SW_COMPAT)) != 0) {
+ 		printf("SWEET WLAN: sweetwlan=%u without a usable /sweet-wlan node, not touched\n", level);
