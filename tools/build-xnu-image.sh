@@ -36,7 +36,7 @@ args="debug=0xc serial=3 cpus=$cpus keepsyms=1 -enable_kprintf_spam -noprogress 
 [ "$usbnet" = 1 ] && args=${args/sweetusb=0/sweetusb=2}   # replace, never add: a duplicate key is ambiguous (review 17 L5: for key=value the LAST one wins in PE_parse_boot_argn, so `--gui --args sweetfb_noconsole=2` gives 2)
 [ "$usbdma" = 1 ] && args="$args sweetusbdma=1"
 [ "$rw" = 1 ] && args="$args ufsrw=1 rootrw=1"
-[ "$gui" = 1 ] && args="$args sweetfb_noconsole=1 sweetfb_hz=30"
+[ "$gui" = 1 ] && { args="$args sweetfb_noconsole=1"; case " $extra " in *" sweetfb_hz="*) ;; *) args="$args sweetfb_hz=30" ;; esac; }   # an explicit sweetfb_hz= in --args wins (GPU runs use 60)
 case "$qr" in off|0) ;; *[!0-9]*) echo "--qr needs seconds or off" >&2; exit 2 ;; *) args="$args sweetqr=$qr" ;; esac
 [ -n "$restart" ] && args="$args sweetrestart=$restart"
 [ "$handover" = 0 ] || args="$args sweetgpu=0x1C500000"   # patch 0102 reads the GPU; sweetgpujob=1 (patch 0103, WRITES) only via --args

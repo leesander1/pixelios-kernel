@@ -1,0 +1,74 @@
+SWEET IOSurface row alignment + panel copy timing (patch 0145): an explicit IOSurfaceBytesPerRow of a single-plane surface is rounded up to 64 bytes (boot-arg sweetsurf_align=0 turns it off), which the Mali-G78 needs to use the surface in place (SpringBoard's icon surfaces were refused); the panel copy in AppleCLCD::present is timed and logged every 300 copies (SWEET FB: panel copy ...).
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -35,6 +35,7 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/system.h>
++#include <pexpert/pexpert.h>
+ #include <libkern/c++/OSArray.h>
+ #include <libkern/c++/OSDictionary.h>
+ #include <libkern/c++/OSNumber.h>
+@@ -302,6 +303,26 @@
+ 	if (s->bytesPerRow < (uint64_t)sweet_div_up(s->width, s->elementWidth) * s->bytesPerElement) {
+ 		return kIOReturnBadArgument;
+ 	}
++	/*
++	 * Patch 0145 (boot-arg sweetsurf_align, default 1): round an explicit IOSurfaceBytesPerRow of a single-plane surface up to
++	 * SWEET_SURFACE_ROW_ALIGN (64), as Apple's IOSurface aligns rows for its GPU. The Mali-G78 (v9) samples and renders linear
++	 * images only with 64-byte aligned rows (Mesa pan_linear_or_tiled_row_align_req); observed 2026-10-27: SpringBoard's icon
++	 * surfaces (600x600 at 2400 bytes per row, 180x180 at 720, ...) were refused by the GPU import ("WSI pitch not properly
++	 * aligned"). Clients read the row bytes back from the surface (IOSurfaceGetBytesPerRow), so a larger value is safe for them.
++	 */
++	{
++		static int align_rows = -1;
++		if (align_rows < 0) {
++			int v = 1;
++			PE_parse_boot_argn("sweetsurf_align", &v, sizeof(v));
++			align_rows = v != 0;
++		}
++		if (align_rows && props->getObject("IOSurfacePlaneInfo") == NULL &&
++		    (s->bytesPerRow & (SWEET_SURFACE_ROW_ALIGN - 1)) != 0) {
++			s->bytesPerRow = (uint32_t)(((uint64_t)s->bytesPerRow + SWEET_SURFACE_ROW_ALIGN - 1) &
++			    ~(uint64_t)(SWEET_SURFACE_ROW_ALIGN - 1));
++		}
++	}
+ 	end = (uint64_t)s->offset + (uint64_t)s->bytesPerRow * sweet_div_up(s->height, s->elementHeight);
+ 
+ 	OSArray *planes = OSDynamicCast(OSArray, props->getObject("IOSurfacePlaneInfo"));
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -544,12 +544,33 @@
+ 				flush_dcache64((addr64_t)(src + s->offset + (uint64_t)sy * s->bytesPerRow),
+ 				    (unsigned)((uint64_t)(h - 1) * s->bytesPerRow + (uint64_t)(sx + w) * 4), FALSE);
+ 			}
++			uint64_t copy_t0 = mach_absolute_time();
+ 			for (int32_t y = 0; y < h; y++) {
+ 				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+ 				    (size_t)w * 4);
+ 			}
+ 			/*
++			 * Patch 0145: time the panel copy (CPU memcpy of the layer into the panel framebuffer) and log it every 300 copies,
++			 * to see how much of each frame it costs once CoreAnimation renders on the GPU (G-10).
++			 */
++			{
++				static uint64_t copy_sum_ns, copy_max_ns;
++				static uint32_t copies;
++				uint64_t ns;
++				absolutetime_to_nanoseconds(mach_absolute_time() - copy_t0, &ns);
++				copy_sum_ns += ns;
++				if (ns > copy_max_ns) {
++					copy_max_ns = ns;
++				}
++				if (++copies == 300) {
++					IOLog("SWEET FB: panel copy %dx%d avg %llu us max %llu us (%u copies)\n", w, h,
++					    copy_sum_ns / copies / 1000, copy_max_ns / 1000, copies);
++					copy_sum_ns = copy_max_ns = 0;
++					copies = 0;
++				}
++			}
++			/*
+ 			 * Diagnostic, read-only: every layer-present, sample a 64x64 grid of the
+ 			 * region just copied (bounds checked above) and log (on change, capped) the nonzero count
+ 			 * and an FNV-1a hash, to tell rendered pixels from an all-zero surface.
