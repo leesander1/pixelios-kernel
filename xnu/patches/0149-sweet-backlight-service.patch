@@ -1,0 +1,184 @@
+SWEET panel brightness service (patch 0149, docs/research/46): SweetBacklight under AppleCLCD with backlight-control (what iOS BrightnessControl matches) and IODisplayParameters (2..500 nits); setProperties brightness-nits (16.16) -> s6e3fc3 DBV 4..2047; DCS 0x51 sent through DSIM0 only with boot-arg sweetbright=1 and only when packet-go is off and the FIFOs are empty, else logged. sweetbacklight=0 removes the service. Staged DPU dump: mask bit 32 = DSIM0 SFR_CTRL/FIFOCTRL/CMD_CONFIG/CMD_STATUS (read-only).
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -98,6 +98,37 @@
+ 
+ OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
+ 
++
++/*
++ * Patch 0149: the panel brightness service iOS looks for (docs/research/46). BrightnessControl.framework's BCAppleBacklightBrtControl
++ * matches a service with "backlight-control" (IOPropertyMatch), reads IODisplayParameters ("brightness" {min,max}, "BrightnessMilliNits"
++ * {min,max,value}, divided by 1000 to nits) and sets brightness with IORegistryEntrySetCFProperties({"brightness-nits": nits * 65536})
++ * (16.16, fcvtzs #0x10) [obs-RE iOS 16.7 BrightnessControl: -[BCAppleBacklightBrtControl setNits:error:] block, driver params path].
++ * Panel s6e3fc3 normal range: 2..500 nits = DBV 4..2047 (panel-samsung-s6e3fc3.c:607-621; HBM 550..800 = 2048..4095 needs WRCTRLD and is
++ * not used). The DBV goes to the panel as DCS 0x51 HI LO (a DCS long write, data type 0x39) through DSIM0 0x1C2C0000: payload +0x5C, header
++ * +0x58, FIFOCTRL +0x68 (EMPTY_PH bit 10, EMPTY_PL bit 8), CMD_CONFIG +0x80 (PKT_GO_EN bit 16), CMD_STATUS +0x8C (regs-dsim.h:233-259,
++ * 302-323; dsim_reg.c:2251-2261). Without boot-arg sweetbright=1 every request is only logged (no write); with it, the command is sent only
++ * when packet-go is off and both FIFOs are empty, and FIFOCTRL is polled for up to 20 ms afterwards.
++ */
++class SweetBacklight : public IOService {
++	OSDeclareDefaultStructors(SweetBacklight);
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
++private:
++	void publish(uint32_t milliNits);
++	vm_offset_t fDsim;
++	int fSend;
++	uint32_t fLogs;
++};
++OSDefineMetaClassAndStructors(SweetBacklight, IOService);
++
++#define SWEET_BL_MIN_NITS       2u
++#define SWEET_BL_MAX_NITS       500u
++#define SWEET_BL_MIN_DBV        4u
++#define SWEET_BL_MAX_DBV        2047u
++#define SWEET_BL_DSIM0          0x1C2C0000ull
++
+ class AppleCLCD : public IOMobileFramebuffer {
+ 	OSDeclareDefaultStructors(AppleCLCD);
+ 
+@@ -290,8 +321,122 @@
+ 		IOLog("SWEET DPU: %s sysmmu_dpu%d ctrl_vm 0x%08x cfg_vm 0x%08x flpt_vm 0x%08x\n",
+ 		    when, i, SWEET_DPU_RD(m, 0x8000), SWEET_DPU_RD(m, 0x8004), SWEET_DPU_RD(m, 0x800C));
+ 	}
++	if (on & 32) {                   /* patch 0149: DSIM0 command-path state for the brightness work (docs/research/46) */
++		static vm_offset_t dsim;
++		if (dsim == 0) {
++			dsim = ml_io_map(0x1C2C0000, 0x1000);
++		}
++		IOLog("SWEET DPU: reading dsim0\n");
++		IOSleep(100);
++		IOLog("SWEET DPU: %s dsim0 sfr_ctrl 0x%08x fifoctrl 0x%08x cmd_config 0x%08x cmd_status 0x%08x\n", when, SWEET_DPU_RD(dsim, 0x64),
++		    SWEET_DPU_RD(dsim, 0x68), SWEET_DPU_RD(dsim, 0x80), SWEET_DPU_RD(dsim, 0x8C));
++	}
+ 	IOLog("SWEET DPU: %s done\n", when);
+ #undef SWEET_DPU_RD
++}
++
++
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++static void
++sweet_bl_num(OSDictionary *d, const char *k, uint32_t v)
++{
++	OSNumber *n = OSNumber::withNumber(v, 32);
++	if (n != NULL) {
++		d->setObject(k, n);
++		n->release();
++	}
++}
++
++void
++SweetBacklight::publish(uint32_t milliNits)
++{
++	OSDictionary *params = OSDictionary::withCapacity(2);
++	OSDictionary *br = OSDictionary::withCapacity(3);
++	OSDictionary *mn = OSDictionary::withCapacity(3);
++	if (params != NULL && br != NULL && mn != NULL) {
++		sweet_bl_num(br, "min", SWEET_BL_MIN_DBV);
++		sweet_bl_num(br, "max", SWEET_BL_MAX_DBV);
++		sweet_bl_num(br, "value", SWEET_BL_MIN_DBV + (uint32_t)(((uint64_t)(milliNits - SWEET_BL_MIN_NITS * 1000u) *
++		    (SWEET_BL_MAX_DBV - SWEET_BL_MIN_DBV)) / ((SWEET_BL_MAX_NITS - SWEET_BL_MIN_NITS) * 1000u)));
++		sweet_bl_num(mn, "min", SWEET_BL_MIN_NITS * 1000u);
++		sweet_bl_num(mn, "max", SWEET_BL_MAX_NITS * 1000u);
++		sweet_bl_num(mn, "value", milliNits);
++		params->setObject("brightness", br);
++		params->setObject("BrightnessMilliNits", mn);
++		setProperty("IODisplayParameters", params);
++	}
++	OSSafeReleaseNULL(params);
++	OSSafeReleaseNULL(br);
++	OSSafeReleaseNULL(mn);
++}
++
++bool
++SweetBacklight::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	int v = 0;
++	fSend = PE_parse_boot_argn("sweetbright", &v, sizeof(v)) && v == 1;
++	fDsim = fSend ? ml_io_map(SWEET_BL_DSIM0, 0x1000) : 0;
++	setProperty("backlight-control", true);
++	setProperty("BuiltIn", true);
++	publish(250u * 1000u);   /* nominal start value for the property only; the panel keeps the bootloader's level until iOS sets one */
++	registerService();
++	IOLog("SWEET BL: backlight service up (%u..%u nits = DBV %u..%u), %s\n", SWEET_BL_MIN_NITS, SWEET_BL_MAX_NITS, SWEET_BL_MIN_DBV,
++	    SWEET_BL_MAX_DBV, fSend ? "sending DCS 0x51 (sweetbright=1)" : "log only (boot-arg sweetbright=1 sends)");
++	return true;
++}
++
++IOReturn
++SweetBacklight::setProperties(OSObject *properties)
++{
++	OSDictionary *d = OSDynamicCast(OSDictionary, properties);
++	OSNumber *n = d ? OSDynamicCast(OSNumber, d->getObject("brightness-nits")) : NULL;
++	if (n == NULL) {
++		return kIOReturnUnsupported;
++	}
++	uint64_t fx = n->unsigned64BitValue();          /* nits, 16.16 */
++	uint64_t mnits = (fx * 1000u) >> 16;
++	if (mnits < SWEET_BL_MIN_NITS * 1000u) {
++		mnits = SWEET_BL_MIN_NITS * 1000u;
++	}
++	if (mnits > SWEET_BL_MAX_NITS * 1000u) {
++		mnits = SWEET_BL_MAX_NITS * 1000u;
++	}
++	uint32_t dbv = SWEET_BL_MIN_DBV + (uint32_t)(((mnits - SWEET_BL_MIN_NITS * 1000u) * (SWEET_BL_MAX_DBV - SWEET_BL_MIN_DBV)) /
++	    ((SWEET_BL_MAX_NITS - SWEET_BL_MIN_NITS) * 1000u));
++	publish((uint32_t)mnits);
++	const char *what = "logged";
++	if (fSend && fDsim != 0) {
++		volatile uint32_t *r = (volatile uint32_t *)fDsim;
++		uint32_t cfg = r[0x80 / 4], fifo = r[0x68 / 4];
++		if (cfg & (1u << 16)) {
++			what = "NOT sent: DSIM packet-go enabled";
++		} else if ((fifo & ((1u << 10) | (1u << 8))) != ((1u << 10) | (1u << 8))) {
++			what = "NOT sent: DSIM FIFO busy";
++		} else {
++			r[0x5C / 4] = 0x51u | ((dbv >> 8) & 0xFFu) << 8 | (dbv & 0xFFu) << 16;     /* 51 HI LO */
++			r[0x58 / 4] = 0x39u | 3u << 8;                                          /* DCS long write, 3 bytes, VC 0 */
++			uint32_t t;
++			for (t = 0; t < 20000; t += 50) {
++				fifo = r[0x68 / 4];
++				if ((fifo & ((1u << 10) | (1u << 8))) == ((1u << 10) | (1u << 8))) {
++					break;
++				}
++				IODelay(50);
++			}
++			what = t < 20000 ? "sent" : "sent, FIFO still busy after 20 ms";
++		}
++		if (fLogs < 40) {
++			IOLog("SWEET BL: dsim cfg 0x%08x fifo 0x%08x status 0x%08x\n", cfg, r[0x68 / 4], r[0x8C / 4]);
++		}
++	}
++	if (fLogs++ < 40) {
++		IOLog("SWEET BL: brightness-nits 0x%llx = %llu.%03llu nits -> DBV %u: %s\n", fx, mnits / 1000u, mnits % 1000u, dbv, what);
++	}
++	return kIOReturnSuccess;
+ }
+ 
+ bool
+@@ -357,6 +502,19 @@
+ 				emptyAccel->registerService();
+ 			}
+ 			emptyAccel->release();
++		}
++	}
++
++	/* patch 0149: the panel brightness service (BrightnessControl matches "backlight-control") unless sweetbacklight=0 */
++	int wantBacklight = 1;
++	PE_parse_boot_argn("sweetbacklight", &wantBacklight, sizeof(wantBacklight));
++	if (wantBacklight != 0) {
++		SweetBacklight *bl = OSTypeAlloc(SweetBacklight);
++		if (bl != NULL) {
++			if (bl->init() && bl->attach(this)) {
++				bl->start(this);
++			}
++			bl->release();
+ 		}
+ 	}
+ 

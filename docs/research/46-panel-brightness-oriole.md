@@ -39,6 +39,17 @@ auto-brightness have no effect [obs: no brightness path in xnu 0046/0077; IOMFB 
 | L2 | Boot-arg `sweetbright=N` (4..4095, refused otherwise): at the 600th swap, if `PKT_GO_EN` = 0 and both FIFOs are empty, one `51 HI LO` long write, poll FIFOCTRL for empty (<= 20 ms), log CMD_STATUS. Visible test: N=200 then N=4000 | a wrong packet = a glitch or the panel ignoring it; values stay inside Android's own range |
 | L3 | iOS brightness: find how backboardd sets brightness (an IOMobileFramebuffer selector or a backlight IOService property), translate its value to 4..4095 and send it as in L2 | needs the selector map: disassembly of IOMobileFramebuffer / backboardd (the `ipsw` tool research 33 used is not installed on this host) |
 
+## 4a. iOS side (found 2026-10-27 with ipsw on the iOS 16.7 cache, read-only)
+
+- IOMobileFramebuffer sends brightness only once a BrightnessControl object is matched to it (`iomfb_bc_up` sets the enabled flag at
+  object +0xB39 for a "BuiltIn" panel; `kern_SwapSetBrightness` otherwise logs "Brightness control is not enabled") [obs-RE].
+- BrightnessControl.framework (`BCAppleBacklightBrtControl`) matches an IOService with `backlight-control` (IOPropertyMatch), reads
+  `IODisplayParameters` (`brightness` {min,max}, `BrightnessMilliNits` {min,max,value} / 1000 = nits, optional `BrightnessMicroAmps`) and
+  builds `BuiltIn`/`MaxNits`/`MinNits` from them; `setNits:` = `IORegistryEntrySetCFProperties(service, {"brightness-nits": nits * 65536})`
+  (16.16) [obs-RE]. IOMFB selectors found on the way: 0x32 (50) = SetBrightnessCorrection (2 scalars, called by backboardd in run eagl3),
+  0x42 (66) = SPLCSetBrightness (2 scalars) [obs-RE].
+- xnu patch 0149 implements this (L3), with the hardware write behind `sweetbright=1` (L2) and the DSIM read in the dump mask bit 32 (L1).
+
 ## 5. Unknowns
 
 - U1: whether the bootloader leaves packet-go enabled (L1 answers it).

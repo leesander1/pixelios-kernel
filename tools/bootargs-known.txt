@@ -620,3 +620,5 @@ zt	xnu
 zzc_rate	xnu
 sweetsurf_align	patch:0145
 sweetdpudump	patch:0146
+sweetbright	patch:0149
+sweetbacklight	patch:0149
