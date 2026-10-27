@@ -6,7 +6,8 @@
 # FACTORY_ZIP: the outer zip from developers.google.com/android/images (e.g. oriole-bp4a.....zip). Steps: unzip the inner image-*.zip,
 # take vendor.img from it (simg2img if sparse), dump /firmware/{fw_bcmdhd.bin,bcmdhd.cal,bcmdhd_clm.blob} and the region variants with
 # debugfs (brew install e2fsprogs; vendor.img is ext4, research 39 s.1), write MANIFEST.txt (sizes, sha256, CRC32, source hashes) and
-# OUT_DIR/wlanfw.bin = tools/pack_wlanfw.py container for xrun --wlanfw. Nothing is flashed; the blobs stay outside git (AGENTS.md rule 4).
+# OUT_DIR/wlanfw.bin = tools/pack_wlanfw.py container for xrun --wlanfw. Also the Bluetooth patch RAM files of /firmware/brcm (*.hcd, research 45)
+# into OUT_DIR/bt/ with their own MANIFEST-bt.txt. Nothing is flashed; the blobs stay outside git (AGENTS.md rule 4).
 set -euo pipefail
 zip=${1:?usage: $0 FACTORY_ZIP [OUT_DIR]}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -45,6 +46,10 @@ done
 			"$(python3 -I -c 'import sys,zlib;print("%08x"%(zlib.crc32(open(sys.argv[1],"rb").read())&0xffffffff))' "$f")"
 	done
 } >"$out/MANIFEST.txt"
+mkdir -p "$out/bt"
+"$DEBUGFS" -R "ls -l /firmware/brcm" "$v" 2>/dev/null | awk '{print $NF}' | grep -E '\.hcd$' >"$out/bt-ls.txt" || true
+while read -r f; do "$DEBUGFS" -R "dump /firmware/brcm/$f $out/bt/$f" "$v" 2>/dev/null || true; done <"$out/bt-ls.txt"
+for f in "$out"/bt/*.hcd; do [ -s "$f" ] && printf '%s %s sha256 %s\n' "$(basename "$f")" "$(stat -f %z "$f")" "$(shasum -a 256 "$f" | cut -d' ' -f1)"; done >"$out/MANIFEST-bt.txt" 2>/dev/null || true
 python3 -I "$here/pack_wlanfw.py" "$out/wlanfw.bin" --fw "$out/files/fw_bcmdhd.bin" --nvram "$out/files/bcmdhd.cal" --clm "$out/files/bcmdhd_clm.blob"
 cat "$out/MANIFEST.txt"
 echo "container: $out/wlanfw.bin"

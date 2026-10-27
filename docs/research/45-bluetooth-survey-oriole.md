@@ -33,7 +33,7 @@ Status: SURVEY, 2026-10-27, read-only. Nothing built or run. Tags: **[src file:l
 
 | Stage | Work | Where |
 |---|---|---|
-| B0 | Extract `BCM*.hcd` / `BTFW_*.hcd` for oriole (extend `tools/extract-wlanfw.sh` to `/firmware/brcm`) | host |
+| B0 | DONE 2026-10-27: `tools/extract-wlanfw.sh` also dumps `/firmware/brcm/*.hcd`; oriole sd1a.210817.015.a4 has one file, `BCM.hcd` 385026 B (sha256 3585af85...), in `~/pixelios-artifacts/wlan-fw-oriole-*/bt/` | host |
 | B1 | Shim read-only probe: USI16 UART registers + the three GPIO states (pins as above, from soc.json once added) | shim, like `--wlan-probe` |
 | B2 | Shim writer: BT_REG_ON high, UART at 115200 8N1 with RTS/CTS, send HCI_Reset (`01 03 0C 00`), expect the Command Complete event; then BT_REG_ON low. Proves pins + UART + chip, no iOS | shim |
 | B3 | XNU: an Exynos USI UART driver on IOSerialFamily that publishes `/dev/uart.bluetooth` (IOSerialBSDClient), plus a small service for `/dev/btpoweroff`/`btreset`/`btwake` on the three GPIOs; ADT `/arm-io/bluetooth` with `transport-encoding` (value from bluetoothd's code path: unknown) | xnu patches |
