@@ -47,6 +47,8 @@ before `fastboot boot`.
 
 ## Workflow
 
+- Pixel 6 (oriole) work across both repos (hardware loop, CI kernel builds, the GPU overlay, where each thread stands):
+  [docs/PIXEL6-WORKFLOW.md](docs/PIXEL6-WORKFLOW.md). Read it before touching the phone.
 - Small, reviewable commits; one concern each. Commit completed work; push only after the gate passes.
 - Record milestones in the PR description or an issue: commits, CI run ids, exact results, unfinished work,
   observations vs guesses.
