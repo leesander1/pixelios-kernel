@@ -38,7 +38,7 @@ fi
 echo "== run B: iOS, CoreAnimation on the GPU (15 min)"
 tools/xrun --kernel "$K" --board oriole --no-camera --gui --touch --dvfs 1803000,1836000,1826000 --gpu-handover \
 	--cpus 8 --duration 900 --restart 960,bootloader --overlay "$ov" \
-	--args "sweetiolog=- sweetsample=- sweetmali=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/lib/libpixosgl-load.dylib sweetnull=backboardd,SpringBoard,pixos-gz-unpack" \
+	--args "sweetiolog=- sweetsample=- sweetmali=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/lib/libpixosgl-load.dylib sweetnull=backboardd,SpringBoard,pixos-gz-unpack${EXTRA_ARGS:+ $EXTRA_ARGS}" \
 	--fail-on 'panic\(cpu|Kernel trap at' --label ${RUNB_LABEL:-oriole-eagl1-ios} >"$out/run-b.txt" 2>&1
 echo "run B exit $?: $(head -1 "$out/run-b.txt")"
 
