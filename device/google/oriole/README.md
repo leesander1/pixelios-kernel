@@ -1,6 +1,7 @@
 # Pixel 6 (oriole)
 
-SoC: `soc/google/gs101`. Status: shim probe observed on hardware 2026-10-26 (`device/google/oriole/hardware/probe-log-2026-10-26-run3.txt`); no XNU boot yet.
+SoC: `soc/google/gs101`. Status: shim probe observed on hardware 2026-10-26 (`device/google/oriole/hardware/probe-log-2026-10-26-run3.txt`); iOS 16.7.16 boots
+to the lock screen 2026-10-27 (`hardware/ios-boot-2026-10-27-boot5.txt`, photo `hardware/ios-lockscreen-2026-10-27-boot5.jpg`). No touch yet.
 
 Captures from this device go in `hardware/`.
 
@@ -14,7 +15,8 @@ PIXOS_DEVICE=oriole tools/phone-state                      # must say product=or
 PIXOS_DEVICE=oriole tools/probe-run --build-args "..." --expect REGEX   # read-only shim probe (fastboot boot, writes nothing)
 ```
 
-`fflash-userdata.sh` (the only tool that writes the phone's storage) stays bluejay-only.
+`fflash-userdata.sh` (the only tool that writes the phone's storage) follows `PIXOS_DEVICE` too; on a macOS host pass `--sparse`
+(fastboot cannot send a raw image larger than RAM).
 
 ## Measured (2026-10-26, bootloader slider-17.0-15199431)
 
@@ -28,4 +30,15 @@ Still from source only: key pins and touch (see `notes` in `board.json`).
 
 `mkadt.py --board oriole`, `mkpayload.py --board oriole` and `build-xnu-image.sh --board oriole --adt A` build it; the ADT is bluejay's
 except `model-number` and the About > Model Name text. The first boot hands XNU the same 4 GiB as bluejay (`xnu_ram`); 6 GiB is
-measured free. Not booted yet: needs a kernel (`xnu.yml` CI), an iOS root in `userdata` (`tools/fflash-userdata.sh`, `PIXOS_DEVICE=oriole`), then `xrun --board oriole --no-camera`.
+measured free.
+
+## iOS boot (2026-10-27)
+
+Kernel from the `xnu.yml` CI, the iOS root in `userdata`, then
+`PIXOS_DEVICE=oriole tools/xrun --board oriole --no-camera --gui --cpus 8 --duration 900 --restart 960,bootloader`.
+
+- SpringBoard needs `/product` in the ADT: `mkadt.py` copies it from `research/ipsw-x/d22ap.adt` (unwrap the IPSW's
+  `DeviceTree.d22ap.im4p` with `tools/adt.py unwrap`; it only warns when the file is missing). Without it SpringBoard aborts in a loop on
+  "Failed to load bounding path bitmap data". A boot without `/product` leaves the root unusable: reflash the pristine image.
+- The first boot of a fresh root runs DataMigration (about 6 min at 8 CPUs) before SpringBoard.
+- Touch: the bootloader leaves USI11 out of SPI mode and the touch pads unconfigured (see the boot record).

@@ -1,0 +1,24 @@
+Pixel 6 (oriole): first iOS boot to the lock screen, 2026-10-27 (host UTC 00:06-00:22)
+
+Run:     xrun --board oriole --no-camera --gui --cpus 8 --duration 900 --restart 960,bootloader, label oriole-boot5
+Kernel:  xnu-04457e5 kernel.development.sweet, sha256 26d6679ce244447353ad71a73a52cb241f729bc80c1783d0e1295c4a4118c882
+Tree:    pixelios-kernel f1607b3; ADT = mkadt.py --board oriole plus /product from the D22AP device tree (research/ipsw-x/d22ap.adt)
+Root:    iOS 16.7.16 (20H392) D22AP, tools/build-ios-root-macos.sh, flashed to userdata with fflash-userdata.sh --sparse
+         (pristine image reflashed before boot 4; boot 4 ran DataMigration unlogged, so boot 5 is the second boot of that root)
+Log:     2015 UDP log lines over the USB CDC-ECM link (Mac 192.168.7.1); full run dir stays local (logs/ is git-ignored)
+
+Result (xrun report): RESULT: PASS, no panic, no Kernel trap; ended by the host at +900 s with a software reset over the USB
+link; phone back in fastboot (18d1:4ee0).
+
+Observed:
+- SpringBoard first log line at +129 s, then the iOS 16 lock screen on the panel (photo: ios-lockscreen-2026-10-27-boot5.jpg):
+  wallpaper fills the panel at the right aspect, colours correct, status bar charging glyph, home bar, camera button.
+- "Failed to load bounding path bitmap data": 0 (boots 2 and 3 aborted SpringBoard in a loop on it, before /product was added
+  and the root reflashed).
+- Clock shows Wednesday, December 31: the epoch (SpringBoard logs 1969-12-31 local time); nothing sets the time yet.
+- Crashes: AegirPoster (wallpaper poster extension) 72x SIGABRT; bluetoothd restart loop (no Bluetooth driver). Neither stops
+  SpringBoard.
+- Touch: not driven. The SWEET TOUCH probe found USI11 (0x10c2100c) in mode 0, not SPI (0x2), and the touch pads at func 0
+  (clk/mosi/miso/cs at 0x10c40060[0..3], reset/mux at 0x10c400c0[0..1], irq at 0x174d00c0[0]): the bootloader leaves the touch
+  bus unconfigured.
+- Not seen in the log: display on, USB configured markers, restart armed (the report's MARKERS list).
