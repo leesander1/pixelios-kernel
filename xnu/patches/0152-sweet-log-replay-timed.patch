@@ -1,0 +1,73 @@
+SWEET console replay, timed (patch 0152): the sweetreplay re-print runs once, at the 100th swap or 200 s after AppleCLCD started (a thread_call), whichever comes first. An idle lock screen never reached 100 swaps in run wd2-oriole2, so 0151 alone printed nothing.
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -247,7 +247,49 @@
+  */
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern "C" void sweet_log_replay(const char *needle);   /* bsd/dev/sweet_ufs.c, patch 0151 */
++
++/*
++ * Patch 0152: the replay runs once, at the 100th swap or 200 s after AppleCLCD started, whichever comes first. An idle lock screen does not
++ * reach 100 swaps (run wd2-oriole2, 2026-10-27: no REPLAY line in 6 min); 200 s is after the USB log comes up (+~144 s on oriole).
++ */
++#include <kern/thread_call.h>
++static volatile UInt32 sweet_fb_replay_done;
++
++static void
++sweet_fb_replay_once(void)
++{
++	static char replay[64];
++	if (!OSCompareAndSwap(0, 1, &sweet_fb_replay_done)) {
++		return;
++	}
++	if (PE_parse_boot_argn("sweetreplay", replay, sizeof(replay)) && replay[0] != '\0') {
++		sweet_log_replay(replay);
++	}
++}
++
++static void
++sweet_fb_replay_tc(thread_call_param_t p0, thread_call_param_t p1)
++{
++	(void)p0;
++	(void)p1;
++	sweet_fb_replay_once();
++}
+ 
++static void
++sweet_fb_replay_arm(void)
++{
++	char probe[4];
++	if (!PE_parse_boot_argn("sweetreplay", probe, sizeof(probe))) {
++		return;
++	}
++	thread_call_t tc = thread_call_allocate(sweet_fb_replay_tc, NULL);
++	if (tc != NULL) {
++		uint64_t deadline;
++		nanoseconds_to_deadline(200ull * NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(tc, deadline);
++	}
++}
++
+ /*
+  * Patch 0147: run 7 (2026-10-27, logs/runs/20261027T150741Z-oriole-eagl7-ios) hung the phone with sweetdpudump=1: no USB log at all
+  * and the timed restart never fired, i.e. a register read stalled the bus during the dump at AppleCLCD start (before the USB log is
+@@ -526,6 +568,7 @@
+ 		ns->registerService();
+ 	}
+ 	OSSafeReleaseNULL(ns);
++	sweet_fb_replay_arm();          /* patch 0152 */
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	return true;
+@@ -650,10 +693,7 @@
+ 		sweet_dpu_dump("swap600");   /* patch 0146: the same registers while CoreAnimation presents */
+ 	}
+ 	if (sweet_fb_swap_count == 100) {   /* patch 0151: early kernel lines again, now that the USB log is up (boot-arg sweetreplay=TEXT) */
+-		static char replay[64];
+-		if (PE_parse_boot_argn("sweetreplay", replay, sizeof(replay)) && replay[0] != '\0') {
+-			sweet_log_replay(replay);
+-		}
++		sweet_fb_replay_once();
+ 	}
+ 	/*
+ 	 * Frame statistics (patch 0141, boot-arg sweetfps=1, default off; G-10): CoreAnimation swaps every vsync even when nothing
