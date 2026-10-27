@@ -78,6 +78,14 @@ then work. Larger job; only if the dump shows the SysMMU on.
 - U1: SysMMU state at handoff (dump bit 8/16).
 - U2: which RDMA layer and window scan out (dump bits 2/4).
 - U3: closed: no native size (UIKit); the DPP crops 1125x2436 -> 1080x2400 with SRC_OFFSET (22, 18).
-- U4: free physical memory below 4 GB for 3 x ~10.4 MB contiguous buffers (memory map of the ADT / XNU `gPhysBase` region).
+- U4: memory for design A. XNU owns only the high bank (board.json `xnu_ram` 0x880000000 + 4 GB; `gPhysBase=0x880000000` in the SweetMali
+  log), so ordinary contiguous IOSurfaces are above 4 GB and a 32-bit `BASEADDR_Y8` in bypass mode cannot reach them: design A needs a
+  carve-out in the low bank 0x80000000-0xFFFFFFFF. Live FDT reserved regions on oriole [obs logs/probe/20261027T122610Z-wlan-oriole1_/usb.txt, "SECTION FDT memory and reserved"]:
+  ect 0x90000000, gsa 0x90200000+4M, tpu 0x93000000+16M, aoc 0x94000000+48M, **sec_dram 0xB7200000-0xC0000000**, **sec_pt
+  0xE0000000-0xE2500000**, cp (modem) 0xE8000000-0xF0800000 (static dtsi), abl 0xF8800000+16M, splash 0xFAC00000+0x9E3400, logs 0xFD3F0000+.
+  Candidate: 0xC0000000-0xE0000000 (512 MB, unused by XNU and by every reserved node), e.g. 3 x 10.5 MB at 0xC8000000. Still to rule out:
+  ABL's staging of the boot image, ramdisk and DTB (research 01: load addresses unknown); the shim prints `INITRD lo= hi=` (loader.c:78) on
+  every XNU boot, read it in the next run; and XNU must map the carve-out (ml_io_map or a reserved IOMemoryDescriptor::withPhysicalAddress,
+  as the framebuffer surface already does) without the VM ever owning it.
 - U5: the exact "update done" poll (decon_reg.c) and whether the HW trigger must be re-armed after a shadow update in command mode.
 - U6: which DPU block stalled the bus in run 7 (0147 answers it).
