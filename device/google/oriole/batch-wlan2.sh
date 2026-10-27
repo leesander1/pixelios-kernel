@@ -19,7 +19,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 2
 export PIXOS_DEVICE=oriole
-K=${KERNEL:-$HOME/pixelios-artifacts/xnu-6757417/kernel.development.sweet}
+K=${KERNEL:-$HOME/pixelios-artifacts/xnu-49194a5/kernel.development.sweet}
 FW=${WLANFW:-$HOME/pixelios-artifacts/wlan-fw-oriole-sd1a.210817.015.a4/wlanfw.bin}
 [[ -f $FW ]] || { echo "error: no firmware container $FW (tools/extract-wlanfw.sh)" >&2; exit 2; }
 out=$HOME/pixelios-artifacts/batch-wlan2-$(date -u +%Y%m%dT%H%M%SZ)

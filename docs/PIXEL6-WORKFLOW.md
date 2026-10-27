@@ -52,7 +52,8 @@ unpacked on the phone (`pixelios-userland gpu/common/gzunpack.c`; the phone has 
   (pushing to `main` also triggers it; workflows on the fork are enabled). Then
   `tools/ci-kernel --commit HEAD --expect-string "<a string your patch logs>"` downloads and verifies it to `~/pixelios-artifacts/xnu-<sha>/`.
   There is no local xnu build on this Mac (`tools/xnu-local-build` needs a Linux host).
-- Kernel in use: `~/pixelios-artifacts/xnu-6757417/kernel.development.sweet` (patches up to 0145).
+- Kernel in use: `~/pixelios-artifacts/xnu-49194a5/kernel.development.sweet` (patches up to 0148: surface row alignment + copy timing,
+  the staged read-only DPU dump `sweetdpudump=MASK`, the per-board Wi-Fi pin). `xnu-6757417` = up to 0145 (the last kernel that ran on hardware).
 
 ## 4. Userland GPU stack (pixelios-userland `gpu/`)
 
