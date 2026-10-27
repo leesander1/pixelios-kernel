@@ -47,3 +47,19 @@ sweetrestart=960 never fired, phone absent from USB afterwards (needs a Power+Vo
 read-only dump). Most likely a bus-stalling register read in the 0146 dump at AppleCLCD start (DECON window/WINCON pages or the DPU
 SysMMUs), which runs before the USB log is up, so the block is unknown. Fix: xnu 0147 (dump only at swap 600, "reading <block>" +
 100 ms before each block, mask 1 DECON / 2 windows / 4 RDMA / 8 SysMMU global / 16 SysMMU VM). Next run: sweetdpudump=7 first.
+
+Evening session (kernel db4a387 = xnu 0145-0149, overlay eagl7)
+- run dpu1 (logs/runs/20261027T191325Z-oriole-dpu1-ios, sweetdpudump=39, backlight service ON): the UI was near-frozen for the whole
+  15 min (0.2-1 fps, ~415 frames, user could not interact); the dump never ran (needs 600 swaps). Icon probe: every 600x600 icon surface
+  is all zero from the CPU's view when backboardd binds it (nonzero 0/256, seed 1): the icons are never drawn by the producer.
+- Wi-Fi run wlan-oriole2 (logs/probe/20261027T193031Z-wlan-oriole2_, --wlan-link=36, 1200 s): "LINK summary reached=S36 stopped=none
+  restore=ok". S35: SYS_MEM out of reset, coreinfo 0x115 (nrb 8 / nb 21, same as bluejay), bankidx not written (ROM banks); S36: ARM CA7
+  IOCTL 0x21 (halted). The whole S00-S36 chain is now observed on oriole.
+- run wd2-oriole1 (XNU attach level 2 + firmware container): PASS, but the SWEET WLAN lines were printed before the USB log came up
+  (+144 s) and are not in usbnet.log; to read them: the persistent console log (xnu 0047, tools/sweet-log-pull.sh from recovery).
+- run dpu2 (logs/runs/20261027T195626Z-oriole-dpu2-ios, same kernel, sweetbacklight=0): 31 fps again after boot settles -> the 0149
+  backlight service causes the stall. Volume keys: key=1 x5, key=2 x2 down/up, iOS showed its volume HUD (user). DPU dump (mask 0x27, no
+  hang): DECON GLOBAL_CON 0x133 (command mode), TRIG_CON 0x3061, SHD_REG_UP_REQ 0; only window 5 enabled, channel 0; RDMA L0 en 0x40000000,
+  IN_CTRL_0 0xff400000, SRC_SIZE = IMG_SIZE 0x09600438 (2400 x 1080), SRC_OFFSET 0, BASEADDR_Y8 = shadow = 0xFAC00000, SRC_STRIDE_1 0;
+  L1-L5 base 0. DSIM0 SFR_CTRL 0x3, FIFOCTRL 0x5507 (PH/PL/RX empty), CMD_CONFIG 0 (packet-go off), CMD_STATUS 0. The SysMMU (mask 8/16)
+  was not read: after this run the remaining suspect for run 7's hang.

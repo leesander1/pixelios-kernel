@@ -1,0 +1,15 @@
+SWEET backlight service opt-in (patch 0150): sweetbacklight now defaults to 0. With the 0149 service published the UI stalled at 0.2-1 fps for a whole run (dpu1); with sweetbacklight=0 it ran at 31 fps (dpu2). Cause not known yet (docs/research/46).
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -505,8 +505,9 @@
+ 		}
+ 	}
+ 
+-	/* patch 0149: the panel brightness service (BrightnessControl matches "backlight-control") unless sweetbacklight=0 */
+-	int wantBacklight = 1;
++	/* patch 0149: the panel brightness service (BrightnessControl matches "backlight-control"). Patch 0150: opt-in (sweetbacklight=1):
++	 * with the service published the UI stalled at 0.2-1 fps for a whole run (dpu1, 2026-10-27) and ran at 31 fps without it (dpu2). */
++	int wantBacklight = 0;
+ 	PE_parse_boot_argn("sweetbacklight", &wantBacklight, sizeof(wantBacklight));
+ 	if (wantBacklight != 0) {
+ 		SweetBacklight *bl = OSTypeAlloc(SweetBacklight);

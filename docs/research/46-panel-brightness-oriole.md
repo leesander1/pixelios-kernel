@@ -50,6 +50,15 @@ auto-brightness have no effect [obs: no brightness path in xnu 0046/0077; IOMFB 
   0x42 (66) = SPLCSetBrightness (2 scalars) [obs-RE].
 - xnu patch 0149 implements this (L3), with the hardware write behind `sweetbright=1` (L2) and the DSIM read in the dump mask bit 32 (L1).
 
+## 4b. First hardware results (2026-10-27)
+
+- DSIM0 at swap 600 (run dpu2): `CMD_CONFIG` 0 (packet-go OFF), `FIFOCTRL` 0x5507 (header, payload and RX FIFOs empty), `CMD_STATUS` 0,
+  `SFR_CTRL` 0x3 [obs]: U1 closed, the L2 send conditions hold.
+- Publishing the 0149 service STALLED the UI (run dpu1: 0.2-1 fps for 15 min, no `SWEET BL:` request logged at all); without it (dpu2)
+  31 fps. So something on the iOS side (CoreBrightness / backboardd) blocks once a `backlight-control` service exists, before it ever sets
+  a brightness. xnu 0150 makes the service opt-in (`sweetbacklight=1`) until that is understood. Next: read what CoreBrightness does after
+  matching (ipsw on CoreBrightness: the properties/notifications it waits for, e.g. an ambient light sensor or `DisplayContainerID`).
+
 ## 5. Unknowns
 
 - U1: whether the bootloader leaves packet-go enabled (L1 answers it).
