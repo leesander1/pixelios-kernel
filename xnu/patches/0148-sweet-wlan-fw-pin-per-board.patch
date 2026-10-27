@@ -1,0 +1,136 @@
+SWEET WLAN firmware pin per board (patch 0148): the level 6 identity pin of 0132 (FW container entry length + CRC32) is looked up by the ADT /sweet-wlan "board" string: bluejay 1764018 bytes crc 0x1153ccff (as before), oriole 1607051 bytes crc 0x54b872bf (oriole-sd1a.210817.015.a4 vendor.img fw_bcmdhd.bin). An unknown or missing board pins nothing, so level 6 stops at the pin (swl_wr SWT_RV, swl_fw_pin, the glue's rv_ok). Levels 1-5 are unchanged.
+diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
+--- a/bsd/dev/sweet_wlan_wr.h
++++ b/bsd/dev/sweet_wlan_wr.h
+@@ -80,11 +80,48 @@
+ /* Run D (patch 0132, docs/research/43a rows W14, X4; boot-arg sweetwlan=6): the reset vector. DHD stores the first dword of the firmware file as bus->resetinstr (dhd_pcie.c:3934-3936) and, for a CA7,
+  * writes it at address 0 after the image, the vars and the rTLV (dhd_pcie.c:10198-10227); the image itself also goes to SWW_RAM_BASE. Firmware IDENTITY pinned for level 6 (not firmware bytes): the
+  * container entry's length and CRC32 (observed run wd3, review 0130 finding 8). The NVRAM entry is NOT pinned: it is only CRC-checked against its container record (swl_nv_prep). */
+-#define SWW_FW_LEN      1764018u
++/* Patch 0148: the pinned identity is per board. The glue looks it up by the ADT /sweet-wlan "board" string (tools/mkadt.py) and puts it in
++ * swl_wx.pin_len / pin_crc; an unknown board leaves both 0 and level 6 stops at the pin. Values = the FW container entry of each board's
++ * factory image: bluejay = observed run wd3 (review 0130 finding 8); oriole = fw_bcmdhd.bin of oriole-sd1a.210817.015.a4 vendor.img
++ * (tools/extract-wlanfw.sh, 2026-10-27: 1607051 bytes, zlib crc32 0x54b872bf). */
++#define SWW_FW_LEN      1764018u        /* bluejay: also the largest accepted image (SWW_IMG_MAX) */
+ #define SWW_FW_CRC      0x1153ccffu
++#define SWW_FW_LEN_ORIOLE 1607051u
++#define SWW_FW_CRC_ORIOLE 0x54b872bfu
+ #define SWW_SEC_SBOOT   0x2u            /* DAR_SEC_SBOOT_MASK, include_pcie_core.h:1161; tested on the word at bp 0 because PCIe core 0x83c rev 72 < 74 (dhd_pcie.c:11741, 10208-10222) */
+ #define SWW_CORE_PCIE2  0x83c           /* PCIE2_CORE_ID, include_hndsoc.h:200; the core whose rev is DHD's buscorerev */
+ _Static_assert(SWW_FW_LEN == SWW_IMG_MAX, "the pinned firmware is the largest accepted image");
++_Static_assert(SWW_FW_LEN_ORIOLE <= SWW_IMG_MAX, "every pinned firmware fits the image bound");
++
++/* patch 0148: the pinned FW identity of a board (exact string, n bytes, a trailing NUL counted or not); 0 found, -1 unknown (both set to 0) */
++static inline int
++swl_fw_pin_for(const char *board, unsigned n, uint32_t *len, uint32_t *crc)
++{
++	static const struct { char name[8]; uint32_t len, crc; } pins[] = {
++		{ "bluejay", SWW_FW_LEN, SWW_FW_CRC },
++		{ "oriole", SWW_FW_LEN_ORIOLE, SWW_FW_CRC_ORIOLE },
++	};
++	*len = 0;
++	*crc = 0;
++	if (board == NULL) {
++		return -1;
++	}
++	if (n > 0 && board[n - 1] == '\0') {
++		n--;
++	}
++	for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
++		unsigned k = 0;
++		while (k < n && k < sizeof(pins[i].name) && pins[i].name[k] != '\0' && pins[i].name[k] == board[k]) {
++			k++;
++		}
++		if (k == n && k < sizeof(pins[i].name) && pins[i].name[k] == '\0') {
++			*len = pins[i].len;
++			*crc = pins[i].crc;
++			return 0;
++		}
++	}
++	return -1;
++}
+ 
+ enum { SWW_CFG = 1, SWW_ATU, SWW_BAR0, SWW_BAR2, SWW_ELBI, SWW_ISO };
+ 
+@@ -286,6 +323,7 @@
+ 	uint32_t tn[4];                                 /* run C: index of the next word swl_wr() accepts per tail kind SWK_* */
+ 	uint8_t rtlv[SWW_RTLV_RNG];                     /* run C: the random bytes of the rTLV */
+ 	uint32_t w14_old, rb;                           /* run D: the word read at address 0 before the store; the word swl_wr() last read back */
++	uint32_t pin_len, pin_crc;                      /* patch 0148: the board's pinned FW identity (swl_fw_pin_for); 0 = unknown board, level 6 refused */
+ };
+ 
+ static inline const char *
+@@ -723,7 +761,7 @@
+ 	    x->img_next >= (x->img_len + 3u) / 4u || val != swl_img_word(x, x->img_next))) {
+ 		return swl_stop(x, SWW_E_IMG);
+ 	}
+-	if ((p->flags & SWT_RV) && (x->img == NULL || x->img_len != SWW_FW_LEN || x->img_crc != SWW_FW_CRC || val != swl_img_word(x, 0))) {
++	if ((p->flags & SWT_RV) && (x->img == NULL || x->pin_len == 0 || x->img_len != x->pin_len || x->img_crc != x->pin_crc || val != swl_img_word(x, 0))) {
+ 		return swl_stop(x, SWW_E_IMG);  /* run D: only image word 0 of the pinned firmware */
+ 	}
+ 	if (p->flags & SWT_TW) {        /* run C: the geometry, the kind's next address and its word are computed here from the state, not taken from the caller */
+@@ -1316,10 +1354,14 @@
+ static inline int
+ swl_fw_pin(struct swl_wx *x)
+ {
+-	if (x->img_len != SWW_FW_LEN || x->img_crc != SWW_FW_CRC) {
+-		printf("SWEET WLAN: W%u firmware identity %u bytes crc %#010x is not the pinned %u bytes crc %#010x\n", x->row, x->img_len, x->img_crc, SWW_FW_LEN, SWW_FW_CRC);
++	if (x->pin_len == 0) {
++		printf("SWEET WLAN: W%u no firmware identity pinned for this board (ADT /sweet-wlan board unknown or missing)\n", x->row);
+ 		return swl_stop(x, SWW_E_IMG);
+ 	}
++	if (x->img_len != x->pin_len || x->img_crc != x->pin_crc) {
++		printf("SWEET WLAN: W%u firmware identity %u bytes crc %#010x is not the pinned %u bytes crc %#010x\n", x->row, x->img_len, x->img_crc, x->pin_len, x->pin_crc);
++		return swl_stop(x, SWW_E_IMG);
++	}
+ 	return 0;
+ }
+ 
+diff --git a/bsd/dev/sweet_wlan.c b/bsd/dev/sweet_wlan.c
+--- a/bsd/dev/sweet_wlan.c
++++ b/bsd/dev/sweet_wlan.c
+@@ -44,6 +44,7 @@
+ 	uint32_t rv;    /* patch 0132: the first dword of the FW container entry (the reset vector), little endian */
+ 	int rv_ok;      /* patch 0132 (review 0132 F5): level 6 and the container's FW entry is the pinned length and CRC */
+ 	int rv_done;    /* the one store of rv at backplane address 0 has been made */
++	uint32_t pin_len, pin_crc;      /* patch 0148: the pinned FW identity of the ADT board (swl_fw_pin_for), 0 = unknown */
+ };
+ 
+ static int
+@@ -299,12 +300,14 @@
+ 	x.b = &wb;
+ 	x.level = level;
+ 	hw->l3 = level;
+-	hw->rv_ok = level >= 6 && sw_fw.p != NULL && sw_fw.len == SWW_FW_LEN && sw_fw.crc == SWW_FW_CRC;
++	hw->rv_ok = level >= 6 && sw_fw.p != NULL && hw->pin_len != 0 && sw_fw.len == hw->pin_len && sw_fw.crc == hw->pin_crc;
+ 	hw->rv_done = 0;
+ 	hw->rv = hw->rv_ok ? ((uint32_t)sw_fw.p[0] | (uint32_t)sw_fw.p[1] << 8 | (uint32_t)sw_fw.p[2] << 16 | (uint32_t)sw_fw.p[3] << 24) : 0;
+ 	x.img = sw_fw.p;
+ 	x.img_len = sw_fw.len;
+ 	x.img_crc = sw_fw.crc;
++	x.pin_len = hw->pin_len;
++	x.pin_crc = hw->pin_crc;
+ 	x.nv_src = sw_nv.p;
+ 	x.nv_src_len = sw_nv.len;
+ 	x.nv_src_crc = sw_nv.crc;
+@@ -342,6 +345,20 @@
+ 		printf("SWEET WLAN: sweetwlan=%u without a usable /sweet-wlan node, not touched\n", level);
+ 		return;
+ 	}
++	/* patch 0148: the board names the pinned firmware identity (level 6 only; other levels do not use it) */
++	{
++		const char *board = NULL;
++		unsigned int bsize = 0;
++		if (SecureDTGetProperty(node, "board", (void const **)&board, &bsize) != kSuccess) {
++			board = NULL;
++			bsize = 0;
++		}
++		if (swl_fw_pin_for(board, bsize, &hw.pin_len, &hw.pin_crc) == 0) {
++			printf("SWEET WLAN: board %.*s: pinned firmware %u bytes crc %#010x\n", (int)bsize, board, hw.pin_len, hw.pin_crc);
++		} else {
++			printf("SWEET WLAN: no pinned firmware for this board (ADT board %s): level 6 will stop at the pin\n", board ? "unknown" : "missing");
++		}
++	}
+ 	sweet_wlan_fwcheck();
+ 	if (!sw_prop_is(node, "reg", SW_MEM, SW_MEM_LEN) || !sw_prop_is(node, "cfg", SW_CFG, 0x1000) ||
+ 	    !sw_prop_is(node, "atu", SW_ATU, 0x1000) || !sw_prop_is(node, "elbi", SW_ELBI, 0x2000) || !sw_prop_is(node, "pmu-iso", SW_ISO, 4)) {

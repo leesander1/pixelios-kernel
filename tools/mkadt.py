@@ -339,6 +339,8 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', no_ufs=False, wla
         ('atu', u64(int(w['atu'], 0), 0x1000)),
         ('elbi', u64(int(w['elbi'], 0), 0x2000)),
         ('pmu-iso', u64(int(w['pmu_pcie1_iso'], 0), 4)),
+        # xnu patch 0148: the board picks the pinned firmware identity (level 6); an unknown board pins nothing
+        ('board', cstr(board)),
     ] + (
         # xnu patch 0129 (W-D3 step 2, docs/research/43): tcm = BAR2 (the chip's 4 MiB backplane window, CPU range), atu-r2-off = outbound iATU region 2
         # inside the atu block. The driver pins both, like the five above, and refuses any other value.

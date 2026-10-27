@@ -26,9 +26,11 @@ class Boards(unittest.TestCase):
     def test_oriole_differs_from_bluejay_only_in_identity(self):
         a, b = tree('bluejay'), tree('oriole')
         diff = {k for k in set(a) | set(b) if a.get(k) != b.get(k)}
-        allowed = {'/device-tree:model-number', '/device-tree/product:product-description'}
+        allowed = {'/device-tree:model-number', '/device-tree/product:product-description',
+                   '/device-tree/sweet-wlan:board'}   # xnu patch 0148: the board picks the pinned Wi-Fi firmware identity
         self.assertTrue(diff <= allowed, sorted(diff - allowed))
         self.assertEqual(b['/device-tree:model-number'], b'oriole\0')
+        self.assertEqual((a['/device-tree/sweet-wlan:board'], b['/device-tree/sweet-wlan:board']), (b'bluejay\0', b'oriole\0'))
         if '/device-tree/product:product-description' in b:   # only with the Apple-derived d22ap.adt present
             self.assertEqual(b['/device-tree/product:product-description'], boards.device_name('oriole').encode() + b'\0')
 

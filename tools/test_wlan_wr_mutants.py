@@ -25,6 +25,7 @@ PATCH0128 = os.path.join(ROOT, "xnu", "patches", "0128-sweet-wlan-fwcheck.patch"
 PATCH0130 = os.path.join(ROOT, "xnu", "patches", "0130-sweet-wlan-image-copy.patch")
 PATCH0131 = os.path.join(ROOT, "xnu", "patches", "0131-sweet-wlan-nvram-rtlv.patch")
 PATCH0132 = os.path.join(ROOT, "xnu", "patches", "0132-sweet-wlan-reset-vector.patch")
+PATCH0148 = os.path.join(ROOT, "xnu", "patches", "0148-sweet-wlan-fw-pin-per-board.patch")
 TEST = os.path.join(ROOT, "shim", "wlan_wr_host_test.c")
 TEST_NV = os.path.join(ROOT, "shim", "wlan_nv_host_test.c")
 HDR_PATH = "bsd/dev/sweet_wlan_wr.h"
@@ -63,7 +64,7 @@ def apply_chain(path, patches):
 
 
 def final_header():
-    return apply_chain(HDR_PATH, (PATCH0125, PATCH0130, PATCH0131, PATCH0132))
+    return apply_chain(HDR_PATH, (PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148))
 
 
 def glue_before():
@@ -71,7 +72,7 @@ def glue_before():
 
 
 def glue_after():
-    return apply_chain(GLUE_PATH, (PATCH0120, PATCH0128, PATCH0125, PATCH0130, PATCH0131, PATCH0132))
+    return apply_chain(GLUE_PATH, (PATCH0120, PATCH0128, PATCH0125, PATCH0130, PATCH0131, PATCH0132, PATCH0148))
 
 
 def new_file(patch, path):
@@ -124,7 +125,13 @@ GLUE_ASSIGNS = sorted([
     ("sweet_wlan_stage3", "x.b = &wb;"),
     ("sweet_wlan_stage3", "x.level = level;"),
     ("sweet_wlan_stage3", "hw->l3 = level;"),  # patch 0132: sw3_wr allows backplane address 0 only at level 6 ...
-    ("sweet_wlan_stage3", "hw->rv_ok = level >= 6 && sw_fw.p != NULL && sw_fw.len == SWW_FW_LEN && sw_fw.crc == SWW_FW_CRC;"),  # review 0132 F5: the pin, in the glue too
+    ("sweet_wlan_stage3", "hw->rv_ok = level >= 6 && sw_fw.p != NULL && hw->pin_len != 0 && sw_fw.len == hw->pin_len && sw_fw.crc == hw->pin_crc;"),  # review 0132 F5: the pin, in the glue too (patch 0148: per board)
+    ("sweet_wlan_stage3", "x.pin_len = hw->pin_len;"),  # patch 0148: the board's pin into the pure part
+    ("sweet_wlan_stage3", "x.pin_crc = hw->pin_crc;"),
+    ("sweet_wlan_init", "const char *board = NULL;"),  # patch 0148: the ADT board string (read-only DT property)
+    ("sweet_wlan_init", "unsigned int bsize = 0;"),
+    ("sweet_wlan_init", "board = NULL;"),  # ... cleared when the property is missing
+    ("sweet_wlan_init", "bsize = 0;"),
     ("sweet_wlan_stage3", "hw->rv_done = 0;"),
     ("sw3_wr", "h->rv_done = 1;"),  # the one store at backplane address 0 is made once
     ("sweet_wlan_stage3", "hw->rv = hw->rv_ok ? ((uint32_t)sw_fw.p[0] | (uint32_t)sw_fw.p[1] << 8 | (uint32_t)sw_fw.p[2] << 16 | (uint32_t)sw_fw.p[3] << 24) : 0;"),  # ... and only this word
@@ -567,13 +574,23 @@ MUTANTS = [
     ("run D tuple: value from the table", [("SWT_ONCE | SWT_RV, .win = 0", "SWT_ONCE, .win = 0")], None),
     ("run D tuple: allowlist match ignores the value flag", [("(SWT_BULK | SWT_TW | SWT_RV)", "(SWT_BULK | SWT_TW)")], None),
     ("run D swl_wr: guard removed", [("if ((p->flags & SWT_RV) && (x->img == NULL", "if (0 && (x->img == NULL")], None),
-    ("run D swl_wr: no image", [("(p->flags & SWT_RV) && (x->img == NULL || x->img_len != SWW_FW_LEN", "(p->flags & SWT_RV) && (x->img_len != SWW_FW_LEN")], None),
-    ("run D swl_wr: length not pinned", [("|| x->img_len != SWW_FW_LEN || x->img_crc != SWW_FW_CRC || val != swl_img_word(x, 0)", "|| x->img_crc != SWW_FW_CRC || val != swl_img_word(x, 0)")], None),
-    ("run D swl_wr: CRC not pinned", [("|| x->img_len != SWW_FW_LEN || x->img_crc != SWW_FW_CRC || val != swl_img_word(x, 0)", "|| x->img_len != SWW_FW_LEN || val != swl_img_word(x, 0)")], None),
-    ("run D swl_wr: value not image word 0", [("|| x->img_crc != SWW_FW_CRC || val != swl_img_word(x, 0)))", "|| x->img_crc != SWW_FW_CRC))")], None),
-    ("run D pin: length not compared", [("if (x->img_len != SWW_FW_LEN || x->img_crc != SWW_FW_CRC) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity", "if (x->img_crc != SWW_FW_CRC) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity")], None),
-    ("run D pin: CRC not compared", [("if (x->img_len != SWW_FW_LEN || x->img_crc != SWW_FW_CRC) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity", "if (x->img_len != SWW_FW_LEN) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity")], None),
-    ("run D pin: always passes", [("if (x->img_len != SWW_FW_LEN || x->img_crc != SWW_FW_CRC) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity", "if (0) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity")], None),
+    ("run D swl_wr: no image", [("(p->flags & SWT_RV) && (x->img == NULL || x->pin_len == 0 ||", "(p->flags & SWT_RV) && (x->pin_len == 0 ||")], None),
+    ("run D swl_wr: unknown board not refused here", [("|| x->pin_len == 0 || x->img_len != x->pin_len", "|| x->img_len != x->pin_len")], "EQUIVALENT: with pin_len 0 an image (img != NULL, so img_len > 0 after swl_img_check) never equals pin_len, so img_len != pin_len refuses the same tuple; swl_fw_pin refuses an unknown board first (killed below as 'run D pin: unknown board passes')"),
+    ("run D swl_wr: length not pinned", [("|| x->img_len != x->pin_len || x->img_crc != x->pin_crc || val != swl_img_word(x, 0)", "|| x->img_crc != x->pin_crc || val != swl_img_word(x, 0)")], None),
+    ("run D swl_wr: CRC not pinned", [("|| x->img_len != x->pin_len || x->img_crc != x->pin_crc || val != swl_img_word(x, 0)", "|| x->img_len != x->pin_len || val != swl_img_word(x, 0)")], None),
+    ("run D swl_wr: value not image word 0", [("|| x->img_crc != x->pin_crc || val != swl_img_word(x, 0)))", "|| x->img_crc != x->pin_crc))")], None),
+    ("run D pin: length not compared", [("if (x->img_len != x->pin_len || x->img_crc != x->pin_crc) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity", "if (x->img_crc != x->pin_crc) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity")], None),
+    ("run D pin: CRC not compared", [("if (x->img_len != x->pin_len || x->img_crc != x->pin_crc) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity", "if (x->img_len != x->pin_len) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity")], None),
+    ("run D pin: always passes", [("if (x->img_len != x->pin_len || x->img_crc != x->pin_crc) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity", "if (0) {\n\t\tprintf(\"SWEET WLAN: W%u firmware identity")], None),
+    # --- patch 0148: the pin per board
+    ("run D pin: unknown board passes", [("\tif (x->pin_len == 0) {\n\t\tprintf(\"SWEET WLAN: W%u no firmware identity pinned", "\tif (0) {\n\t\tprintf(\"SWEET WLAN: W%u no firmware identity pinned")], None),
+    ("pin table: another oriole CRC", [("#define SWW_FW_CRC_ORIOLE 0x54b872bfu", "#define SWW_FW_CRC_ORIOLE 0x54b872beu")], None),
+    ("pin table: another oriole length", [("#define SWW_FW_LEN_ORIOLE 1607051u", "#define SWW_FW_LEN_ORIOLE 1607055u")], None),
+    ("pin table: prefix match", [("if (k == n && k < sizeof(pins[i].name) && pins[i].name[k] == '\\0') {", "if (k == n) {")], None),
+    ("pin table: longer names match", [("if (k == n && k < sizeof(pins[i].name)", "if (k <= n && k < sizeof(pins[i].name)")], None),
+    ("pin table: trailing NUL not dropped", [("if (n > 0 && board[n - 1] == '\\0') {", "if (0) {")], None),
+    ("pin table: unknown board keeps old values", [("\t*len = 0;\n\t*crc = 0;\n\tif (board == NULL) {", "\tif (board == NULL) {")], None),
+    ("pin table: oriole gets the bluejay pin", [("{ \"oriole\", SWW_FW_LEN_ORIOLE, SWW_FW_CRC_ORIOLE }", "{ \"oriole\", SWW_FW_LEN, SWW_FW_CRC }")], None),
     ("run D pin: another CRC constant", [("#define SWW_FW_CRC      0x1153ccffu", "#define SWW_FW_CRC      0x1153ccfeu")], None),
     ("run D stage: pin before the first store removed", [("if (x->level >= SWW_LEVEL0 + 4) {      /* run D: the firmware identity", "if (0) {      /* run D: the firmware identity")], None),
     ("run D stage: pin from level 5", [("if (x->level >= SWW_LEVEL0 + 4) {      /* run D: the firmware identity", "if (x->level >= SWW_LEVEL0 + 3) {      /* run D: the firmware identity")], None),

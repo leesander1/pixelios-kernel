@@ -569,6 +569,9 @@ else
 	# patch 0132 (run D) changes it once more: the same way, on top of the text after 0131
 	awk '/^diff --git a\/bsd\/dev\/sweet_wlan_wr.h /{on=1;print;next} on&&/^diff --git /{exit} on{print}' ../xnu/patches/0132-sweet-wlan-reset-vector.patch > $O/sweet_wlan_wr.0132.diff
 	patch -s -p1 -d $O/wrp < $O/sweet_wlan_wr.0132.diff || { echo "FAIL patch 0132 does not apply to sweet_wlan_wr.h" >&2; exit 1; }
+	# patch 0148 (the firmware pin per board) on top of the text after 0132
+	awk '/^diff --git a\/bsd\/dev\/sweet_wlan_wr.h /{on=1;print;next} on&&/^diff --git /{exit} on{print}' ../xnu/patches/0148-sweet-wlan-fw-pin-per-board.patch > $O/sweet_wlan_wr.0148.diff
+	patch -s -p1 -d $O/wrp < $O/sweet_wlan_wr.0148.diff || { echo "FAIL patch 0148 does not apply to sweet_wlan_wr.h" >&2; exit 1; }
 	cp $O/wrp/bsd/dev/sweet_wlan_wr.h $O/sweet_wlan_wr.h
 	chk "wlan_wr_host_test (compile)" gcc -O1 -Wall -Wextra -Werror -I$O -o $O/wlan_wr_host_test wlan_wr_host_test.c
 	chk "wlan_wr_host_test" $O/wlan_wr_host_test

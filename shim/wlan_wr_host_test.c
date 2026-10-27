@@ -230,11 +230,16 @@ static void bus(struct swl_wbus *b, struct fake *f)
 	b->rd = f_rd; b->wr = f_wr; b->map2 = f_map2; b->delay_us = f_delay; b->ctx = f;
 }
 
+/* patch 0148: the board's pinned FW identity the glue would put in x (default: bluejay, the board the run D cases were written for) */
+static uint32_t tpin_len = SWW_FW_LEN, tpin_crc = SWW_FW_CRC;
+
 static void mkx(struct swl_wx *x, struct swl_wbus *b, int level)
 {
 	memset(x, 0, sizeof *x);
 	x->b = b;
 	x->level = level;
+	x->pin_len = tpin_len;
+	x->pin_crc = tpin_crc;
 }
 
 static int run(struct fake *f, struct swl_wx *x, int level)
@@ -1960,6 +1965,59 @@ static void rd_put(struct fake *f, struct swl_wx *x)
 	loglen = 0; logbuf[0] = 0;
 }
 
+/* patch 0148: the pin per board. The table (exact names, trailing NUL optional), an unknown board (nothing pinned: level 6 stops before
+ * any bus access), the oriole firmware identity through the whole level 6 run, and each board refusing the other board's image. */
+static void rund_board(void)
+{
+	static struct fake f;
+	struct swl_wx x;
+	uint32_t l, c;
+	const uint32_t len = 1764018u, pin = 0x1153ccffu, olen = 1607051u, opin = 0x54b872bfu;
+
+	CHECK(swl_fw_pin_for("bluejay", 8, &l, &c) == 0 && l == len && c == pin);
+	CHECK(swl_fw_pin_for("bluejay", 7, &l, &c) == 0 && l == len && c == pin);
+	CHECK(swl_fw_pin_for("oriole", 7, &l, &c) == 0 && l == olen && c == opin && olen == SWW_FW_LEN_ORIOLE && opin == SWW_FW_CRC_ORIOLE);
+	CHECK(swl_fw_pin_for("oriole", 6, &l, &c) == 0 && l == olen);
+	l = c = 1;
+	CHECK(swl_fw_pin_for("oriol", 6, &l, &c) == -1 && l == 0 && c == 0);
+	CHECK(swl_fw_pin_for("orioles", 8, &l, &c) == -1 && l == 0 && c == 0);
+	CHECK(swl_fw_pin_for("oriole\0x", 8, &l, &c) == -1 && l == 0);
+	CHECK(swl_fw_pin_for("bluejayX", 8, &l, &c) == -1 && l == 0);
+	CHECK(swl_fw_pin_for("raven", 6, &l, &c) == -1 && l == 0);
+	CHECK(swl_fw_pin_for("", 1, &l, &c) == -1 && l == 0);
+	CHECK(swl_fw_pin_for(NULL, 0, &l, &c) == -1 && l == 0 && c == 0);
+
+	/* unknown board: the bluejay firmware at level 6 stops at the pin before any bus access */
+	cx_init_rng();
+	mkimg(len);
+	imgbuf[0] = 0x10; imgbuf[1] = 0; imgbuf[2] = 0; imgbuf[3] = 0xEA;
+	forge(imgbuf, len, pin);
+	cx_hand(336);
+	tpin_len = 0; tpin_crc = 0;
+	obsb(&f, 336);
+	CHECK(runc(&f, &x, 6, len, pin) == -SWW_E_IMG && f.nw == 0 && f.nrd == 0 && strstr(logbuf, "W14 no firmware identity pinned for this board") != 0);
+	/* the oriole board with the bluejay firmware: refused the same way */
+	tpin_len = olen; tpin_crc = opin;
+	obsb(&f, 336);
+	CHECK(runc(&f, &x, 6, len, pin) == -SWW_E_IMG && f.nw == 0 && f.nrd == 0 && strstr(logbuf, "is not the pinned 1607051 bytes crc 0x54b872bf") != 0);
+
+	/* the oriole board with an image of the oriole identity: the whole level 6 run, the image's first dword at address 0 */
+	mkimg(olen);
+	imgbuf[0] = 0x10; imgbuf[1] = 0; imgbuf[2] = 0; imgbuf[3] = 0xEA;
+	forge(imgbuf, olen, opin);
+	CHECK(tcrc(imgbuf, olen) == opin);
+	cx_hand(336);
+	obsb(&f, 336);
+	CHECK(runc(&f, &x, 6, olen, opin) == 0);
+	CHECK(x.stopped == 0 && x.restore == SWW_RS_NONE && x.flags == (CLEVEL5 | SWF_W14) && x.armed == 0 && x.nstore == f.nw && f.win2 == 0 && all_allowed(&f));
+	CHECK(f.lastw.space == SWW_BAR2 && f.lastw.win == 0 && f.lastw.off == 0 && f.lastw.val == 0xEA000010u && ramarr[0] == 0xEA000010u);
+	ramarr[0] = PAT;
+	/* the bluejay board with that oriole image: refused */
+	tpin_len = SWW_FW_LEN; tpin_crc = SWW_FW_CRC;
+	obsb(&f, 336);
+	CHECK(runc(&f, &x, 6, olen, opin) == -SWW_E_IMG && f.nw == 0 && f.nrd == 0 && strstr(logbuf, "firmware identity 1607051 bytes crc 0x54b872bf is not the pinned 1764018 bytes crc 0x1153ccff") != 0);
+}
+
 static void rund(void)
 {
 	static struct fake f, g;
@@ -2179,6 +2237,7 @@ int main(void)
 	runc_gates();
 	runc_deny_sweep();
 	rund();
+	rund_board();
 	if (fails) {
 		fprintf(stderr, "RESULT: FAIL wlan_wr_host_test (%u checks)\n", fails);
 		return 1;

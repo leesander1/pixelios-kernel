@@ -71,7 +71,16 @@ class SweetWlanNode(unittest.TestCase):
 
     def test_tcm_is_the_only_new_surface_in_the_node(self):
         p = wlan_node("bluejay")
-        self.assertEqual(sorted(p), sorted(["name", "compatible", "reg", "cfg", "atu", "elbi", "pmu-iso", "tcm", "atu-r2-off", "AAPL,phandle"]))
+        # "board" (xnu patch 0148): a read-only string, no address; it selects the pinned firmware identity of level 6
+        self.assertEqual(sorted(p), sorted(["name", "compatible", "reg", "cfg", "atu", "elbi", "pmu-iso", "tcm", "atu-r2-off", "board", "AAPL,phandle"]))
+
+    def test_board_names_the_pinned_firmware(self):
+        # the strings bsd/dev/sweet_wlan_wr.h swl_fw_pin_for knows (patch 0148); another board's node would pin nothing
+        self.assertEqual(wlan_node("bluejay")["board"], b"bluejay\0")
+        self.assertEqual(wlan_node("oriole")["board"], b"oriole\0")
+        patch = open(os.path.join(ROOT, "xnu", "patches", "0148-sweet-wlan-fw-pin-per-board.patch")).read()
+        self.assertIn('{ "bluejay", SWW_FW_LEN, SWW_FW_CRC }', patch)
+        self.assertIn('{ "oriole", SWW_FW_LEN_ORIOLE, SWW_FW_CRC_ORIOLE }', patch)
 
     def test_no_tcm_without_the_soc_keys(self):
         # a board whose soc.json lacks the stage-3 keys keeps the stage-1 node (the driver then has no tcm property and refuses level >= 3)
