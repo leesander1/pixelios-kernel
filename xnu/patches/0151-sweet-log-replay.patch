@@ -1,0 +1,74 @@
+SWEET console replay (patch 0151, boot-arg sweetreplay=TEXT): at AppleCLCD's 100th swap (the USB log is up by then), every line of the 0047 console ring that contains TEXT is printed again as "REPLAY: ..." (max 96 lines, 255 bytes each). Kernel lines from before the USB log (e.g. SWEET WLAN at boot, lost in run wd2-oriole1) reach the host this way.
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -819,7 +819,47 @@
+ 		}
+ 		sweet_log_ring[at++ % SWEET_LOG_SIZE] = c[i];
+ 		bol = (c[i] == '\n');
++	}
++}
++
++/*
++ * Patch 0151 (boot-arg sweetreplay=TEXT, from AppleCLCD at its 100th swap): print again every line of the console ring that contains
++ * TEXT, prefixed "REPLAY: ". Lines the kernel prints before the USB log is up (+~144 s on oriole) never reach the host otherwise: the USB
++ * replay holds only the last 64 KiB, and the oriole run wd2-oriole1 (2026-10-27) lost all its SWEET WLAN lines that way. The ring is the
++ * 4 MiB console copy of patch 0047; bytes [total - SIZE, total) at the call are scanned, lines over 255 bytes are cut, at most 96 lines.
++ */
++void sweet_log_replay(const char *needle);
++
++void
++sweet_log_replay(const char *needle)
++{
++	uint64_t end = os_atomic_load(&sweet_log_total, relaxed);
++	uint64_t start = end > SWEET_LOG_SIZE ? end - SWEET_LOG_SIZE : 0;
++	size_t nl = needle ? strlen(needle) : 0;
++	char line[256];
++	size_t n = 0;
++	int shown = 0;
++
++	if (nl == 0) {
++		return;
+ 	}
++	printf("REPLAY: lines containing \"%s\" in the console ring (%llu bytes)\n", needle, end - start);
++	for (uint64_t p = start; p < end && shown < 96; p++) {
++		char c = sweet_log_ring[p % SWEET_LOG_SIZE];
++		if (c != '\n') {
++			if (n < sizeof(line) - 1) {
++				line[n++] = c;
++			}
++			continue;
++		}
++		line[n] = '\0';
++		if (strnstr(line, needle, n + 1) != NULL && strncmp(line, "REPLAY: ", 8) != 0) {
++			printf("REPLAY: %s\n", line);
++			shown++;
++		}
++		n = 0;
++	}
++	printf("REPLAY: done, %d lines\n", shown);
+ }
+ 
+ /*
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -246,6 +246,7 @@
+  * The blocks belong to the running display (the panel refreshes from them), so their clocks and power are on.
+  */
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern "C" void sweet_log_replay(const char *needle);   /* bsd/dev/sweet_ufs.c, patch 0151 */
+ 
+ /*
+  * Patch 0147: run 7 (2026-10-27, logs/runs/20261027T150741Z-oriole-eagl7-ios) hung the phone with sweetdpudump=1: no USB log at all
+@@ -648,6 +649,12 @@
+ 	if (sweet_fb_swap_count == 600) {
+ 		sweet_dpu_dump("swap600");   /* patch 0146: the same registers while CoreAnimation presents */
+ 	}
++	if (sweet_fb_swap_count == 100) {   /* patch 0151: early kernel lines again, now that the USB log is up (boot-arg sweetreplay=TEXT) */
++		static char replay[64];
++		if (PE_parse_boot_argn("sweetreplay", replay, sizeof(replay)) && replay[0] != '\0') {
++			sweet_log_replay(replay);
++		}
++	}
+ 	/*
+ 	 * Frame statistics (patch 0141, boot-arg sweetfps=1, default off; G-10): CoreAnimation swaps every vsync even when nothing
+ 	 * changes, so the swap rate is not a render rate. Sample a 32x32 grid of layer 0's surface at every swap, count the swaps whose
