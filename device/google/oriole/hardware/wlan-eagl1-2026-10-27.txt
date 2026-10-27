@@ -26,3 +26,18 @@ Run B (iOS, overlay gpu/eagl, sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/loc
   before each crash, so the CPU fallback never engaged. No kernel panic. Touch and SpringBoard kept running.
 - Fixed for run 2 (userland gpu/eagl): b3a8/w30r/format 0/LA08 imports, Apple row bytes + a VM-range guard on uploads (log + drop instead of
   crash), BGRA data with RGBA internal format, luminance swizzles, crash counter resets only after 2 min of GPU frames
+
+GPU runs 2-6 (same batch script, SKIP_A=1; userland gpu/eagl c6cd90e..bc4a1a0)
+- run 2 (eagl2): the screen is drawn by the GPU (photos: wallpaper, widgets, text, dock, App Library); no backboardd crash in 15 min.
+  App icons black: icon surfaces (600x600 at 2400 B/row, 180x180 at 720 ...) refused by Panfrost, "MESA: error: WSI pitch not properly
+  aligned" (v9 linear needs 64-byte rows, pan_linear_or_tiled_row_align_req); large uploads dropped (CA sets UNPACK_ALIGNMENT 8 on packed rows)
+- run 3 (eagl3, CPU-copy fallback): Settings app icons render; home screen icons transparent instead of black. flush + GPU wait 1.6-2.1 ms
+  per frame, 20-31 fps during activity. User: "laggy but better than cpu"
+- run 4 (eagl4, checksum re-copy): home screen icons still missing
+- run 5 (eagl5, CI kernel 6757417 = xnu patch 0145, sweetfb_hz=60): 600x600 icon surfaces now 2432 B/row and import "ok"; icons still
+  missing; "SWEET FB: panel copy 1080x2400 avg 11189 us max 24311 us (300 copies)" (and 10920/24791): the kernel's CPU copy of each frame
+  to the panel costs 11-25 ms, the GPU ~2 ms. User: swiping feels the same at 60 Hz. -> next for lag: page flip instead of the copy
+- run 6 (eagl6): extensions astc_ldr 1, etc1 1, pvrtc 0, s3tc 0, framebuffer_fetch 1; the one compressed upload (ASTC 4x4 0x93b0,
+  1125x2436, the wallpaper) succeeded. Home screen not visited in this run.
+- texture2DRect appears only in QuartzCore's filter shaders (blur, gradient maps; strings of the iOS 16.7 cache), not in the layer
+  content path, so the rect mapping does not explain the icons. Next: probe of sampled surfaces (gpu/eagl 235ae9f) on the home screen.
