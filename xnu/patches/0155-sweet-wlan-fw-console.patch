@@ -1,5 +1,5 @@
-SWEET WLAN level 7 firmware console (patch 0155, reads only). Once W16 has seen the shared-area address, the firmware runs 1 s longer, then the hnd_cons_t at shared word 5 (console_addr) is read as brcmfmac does (pcie.c:828-891: buffer address +8, size +12, write index +16) and the bytes 0..write index are printed as "SWEET WLAN: FW <line>" (CR dropped, lines cut at 120 characters, other non-printable bytes as '.'), then W17 as before.
-Only under BAR2 window 0 after cfg 0x84 is back at 0: a console or buffer not entirely inside RAM below 0x400000, a size of 0 or above 64 KiB, or a write index beyond the size is logged and not read. No new store, no new tuple, no glue change.
+SWEET WLAN level 7 firmware console (patch 0155, reads only apart from one BAR2 window move). Once W16 has seen the shared-area address, the firmware runs 1 s longer, then the hnd_cons_t at shared word 5 (console_addr) is read as brcmfmac does (pcie.c:828-891: buffer address +8, size +12, write index +16) and the bytes 0..write index are printed as "SWEET WLAN: FW <line>" (CR dropped, lines cut at 120 characters, other non-printable bytes as '.'), then W17 as before.
+The header must lie in RAM below 0x400000 (BAR2 window 0); the buffer (observed at 0x0041533c, 8192 bytes, run wd7-oriole2) anywhere in RAM: bytes below 0x400000 under window 0, the rest under the tail window (two new tuples SWT_WIN2_TAIL_CON / SWT_WIN2_ZERO_CON, cfg 0x84 to 0x400000 once and back, arming the window and CA restore groups). A size of 0 or above 64 KiB or a write index beyond the size is logged and not read. No glue change.
 Tests: shim/wlan_wr_host_test.c rune() console cases, tools/test_wlan_wr_mutants.py.
 
 diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
@@ -28,7 +28,27 @@ diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
  #define SWW_CORE_PCIE2  0x83c           /* PCIE2_CORE_ID, include_hndsoc.h:200; the core whose rev is DHD's buscorerev */
  _Static_assert(SWW_FW_LEN == SWW_IMG_MAX, "the pinned firmware is the largest accepted image");
  _Static_assert(SWW_FW_LEN_ORIOLE <= SWW_IMG_MAX, "every pinned firmware fits the image bound");
-@@ -357,6 +364,7 @@
+@@ -208,6 +215,7 @@
+ 	SWT_CA_RUN_ASSERT = SWT_N_D, SWT_CA_RUN_MID, SWT_CA_RUN_RELEASE, SWT_CA_RUN_END,       /* W15 */
+ 	SWT_WIN2_TAIL_E, SWT_WIN2_ZERO_E,                               /* W16 window, W16 window restore */
+ 	SWT_CA_STOP,                                                    /* W17 */
++	SWT_WIN2_TAIL_CON, SWT_WIN2_ZERO_CON,                           /* patch 0155: W16 console buffer above 0x400000, window and its restore */
+ 	SWT_N
+ };
+ _Static_assert(SWT_N <= 64, "x->done is a 64-bit tuple mask");
+@@ -295,6 +303,11 @@
+ 	[SWT_WIN2_ZERO_E]    = { .row = 16, .run = 5, .space = SWW_CFG, .rgrp = SWW_RG_CA, .flags = SWT_ONCE | SWT_TAIL, .pred1 = SWT_WIN2_TAIL_E + 1, .off = SWW_CFG_WIN2, .val = 0, .vmask = 0xFFFFFFFFu,
+ 	                        .omask = 0xFFFFFFFFu, .oval = SWW_WIN_TAIL, .need = SWF_W15 },
+ 	[SWT_CA_STOP]        = { .row = 17, .run = 5, .space = SWW_BAR0, .flags = SWT_ONCE, .win = SWW_WIN_CA7WRAP, .off = SWL_AGENT_RESET_CTL, .val = 1u, .vmask = 1u, .need = SWF_W16 },
++	/* patch 0155: the console buffer (observed at 0x0041533c, run wd7-oriole2) is read under the tail window once more, after the W16 window is back at 0 */
++	[SWT_WIN2_TAIL_CON]  = { .row = 16, .run = 5, .space = SWW_CFG, .rgrp = SWW_RG_W84 | SWW_RG_CA, .flags = SWT_ONCE | SWT_TAIL, .pred1 = SWT_WIN2_ZERO_E + 1, .off = SWW_CFG_WIN2, .val = SWW_WIN_TAIL,
++	                        .vmask = 0xFFFFFFFFu, .omask = 0xFFFFFFFFu, .oval = 0, .need = SWF_W15 },
++	[SWT_WIN2_ZERO_CON]  = { .row = 16, .run = 5, .space = SWW_CFG, .rgrp = SWW_RG_CA, .flags = SWT_ONCE | SWT_TAIL, .pred1 = SWT_WIN2_TAIL_CON + 1, .off = SWW_CFG_WIN2, .val = 0, .vmask = 0xFFFFFFFFu,
++	                        .omask = 0xFFFFFFFFu, .oval = SWW_WIN_TAIL, .need = SWF_W15 },
+ };
+ 
+ /* The read allowlist (every read of run A, including the ones of the preconditions). */
+@@ -357,6 +370,7 @@
  	uint32_t pin_len, pin_crc;                      /* patch 0148: the board's pinned FW identity (swl_fw_pin_for); 0 = unknown board, level 6 refused */
  	uint32_t sh_addr, sh_polls, sh_n;               /* run E: the shared-area address (0 = none seen), reads made, words logged */
  	uint32_t sh[SWW_SH_WORDS];
@@ -36,24 +56,22 @@ diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
  };
  
  static inline const char *
-@@ -1465,7 +1473,63 @@
- 		}
- 		SWW_RD(x, SWW_BAR2, win, a - win, x->sh[x->sh_n]);
- 		x->sh_n++;
-+	}
-+	return 0;
-+}
+@@ -1468,7 +1482,72 @@
+ 	}
+ 	return 0;
+ }
 +
 +/* W16 console (patch 0155, reads only): the firmware's log ring, read as brcmfmac brcmf_pcie_bus_console_init/_read do (pcie.c:828-891): the hnd_cons_t at console_addr gives the buffer,
-+ * its size and the write index; the bytes 0..write index are printed as "SWEET WLAN: FW <line>" (CR dropped, a line cut at SWW_CON_LINE, other non-printable bytes as '.'). Only under BAR2
-+ * window 0 (cfg 0x84 back at 0): a console or buffer that is not entirely inside RAM below 0x400000 is logged and not read. A wrapped ring shows only its newest part (as brcmfmac from 0). */
++ * its size and the write index; the bytes 0..write index are printed as "SWEET WLAN: FW <line>" (CR dropped, a line cut at SWW_CON_LINE, other non-printable bytes as '.'). The header is read
++ * under BAR2 window 0 (it must lie in RAM below 0x400000); the buffer must lie inside RAM, its bytes below 0x400000 under window 0 and the rest under the tail window (cfg 0x84 moved once,
++ * SWT_WIN2_TAIL_CON, and back). A wrapped ring shows only its newest part (as brcmfmac, from 0). */
 +static inline int
 +swl_con(struct swl_wx *x)
 +{
-+	uint32_t c, end = SWW_RAM_BASE + x->ram_bytes, lim, i, w = 0, ch;
++	uint32_t c, end = SWW_RAM_BASE + x->ram_bytes, lim, i, a, w = 0, ch, win = 0;
 +	char line[SWW_CON_LINE + 1u];
 +	unsigned n = 0;
-+
+ 
 +	if (x->sh_n <= SWW_SH_CONSOLE || x->sh[SWW_SH_CONSOLE] == 0) {
 +		return 0;
 +	}
@@ -67,14 +85,19 @@ diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
 +	SWW_RD(x, SWW_BAR2, 0, c + SWW_CON_SIZE, x->con_size);
 +	SWW_RD(x, SWW_BAR2, 0, c + SWW_CON_IDX, x->con_idx);
 +	printf("SWEET WLAN: W16 console at %#010x: buffer %#010x size %u write index %u\n", c, x->con_buf, x->con_size, x->con_idx);
-+	if (x->con_buf < SWW_RAM_BASE || (x->con_buf & 3u) != 0 || x->con_size == 0 || x->con_size > SWW_CON_MAX || x->con_buf >= lim || lim - x->con_buf < x->con_size ||
++	if (x->con_buf < SWW_RAM_BASE || (x->con_buf & 3u) != 0 || x->con_size == 0 || x->con_size > SWW_CON_MAX || x->con_buf >= end || end - x->con_buf < x->con_size ||
 +	    x->con_idx > x->con_size) {
-+		printf("SWEET WLAN: W16 console buffer not read (outside RAM below %#x, size above %#x or index beyond the size)\n", lim, SWW_CON_MAX);
++		printf("SWEET WLAN: W16 console buffer not read (outside RAM below %#x, size above %#x or index beyond the size)\n", end, SWW_CON_MAX);
 +		return 0;
- 	}
++	}
 +	for (i = 0; i < x->con_idx; i++) {
 +		if ((i & 3u) == 0) {
-+			SWW_RD(x, SWW_BAR2, 0, x->con_buf + i, w);
++			a = x->con_buf + i;
++			if (a >= SWW_WIN_TAIL && win == 0) {
++				SWW_TRY(swl_wr(x, SWW_CFG, 0, SWW_CFG_WIN2, SWW_WIN_TAIL));
++				win = SWW_WIN_TAIL;
++			}
++			SWW_RD(x, SWW_BAR2, win, a - win, w);
 +		}
 +		ch = (w >> (8u * (i & 3u))) & 0xFFu;
 +		if (ch == '\r') {
@@ -96,11 +119,17 @@ diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
 +		printf("SWEET WLAN: FW %s\n", line);
 +		x->con_lines++;
 +	}
++	if (win != 0) {
++		SWW_TRY(swl_wr(x, SWW_CFG, 0, SWW_CFG_WIN2, 0));
++	}
 +	printf("SWEET WLAN: W16 console %u bytes, %u lines\n", x->con_idx, x->con_lines);
- 	return 0;
- }
- 
-@@ -1495,6 +1559,7 @@
++	return 0;
++}
++
+ /* W16: the firmware's handshake (dhd_pcie.c:13613-13705; brcmfmac-pcie.c:1740-1770): the last RAM word held the length token (W12); a running firmware replaces it with the address of its
+  * pciedev_shared_t. Read it every SWW_SH_US, at most SWW_SH_POLLS times, with cfg 0x84 on the tail window (as W11..W13); a 4-aligned value inside RAM below the last word is the address, and
+  * SWW_SH_WORDS words there are logged raw. A timeout is a result, not a stop; all-ones (link gone) is a stop. Nothing is stored apart from the window. */
+@@ -1495,6 +1574,7 @@
  		}
  		if (v != x->tok && v >= SWW_RAM_BASE && v < end - 4u && (v & 3u) == 0) {
  			x->sh_addr = v;
@@ -108,7 +137,7 @@ diff --git a/bsd/dev/sweet_wlan_wr.h b/bsd/dev/sweet_wlan_wr.h
  			break;
  		}
  		if (i + 1u < SWW_SH_POLLS) {
-@@ -1508,6 +1573,9 @@
+@@ -1508,6 +1588,9 @@
  	if (x->sh_addr != 0 && x->sh_addr < SWW_WIN_TAIL) {
  		SWW_TRY(swl_sh_read(x, 0));
  	}

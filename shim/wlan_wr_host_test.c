@@ -1664,9 +1664,11 @@ static void runc_deny_sweep(void)
 	CHECK(swl_wr_ok_from(SWT_NV_VARS + 1, SWW_BAR2, 0x400000, 0x1FFFFCu, 5) == SWT_NV_TOKEN && swl_wr_ok_from(SWT_NV_TOKEN + 1, SWW_BAR2, 0x400000, 0x1FFFFCu, 5) < 0);
 	CHECK(swl_wr_ok(SWW_BAR2, 0, 0x3B0000u, 5) < 0 && swl_wr_ok(SWW_BAR2, 0, 0, 5) == SWT_RESET0 && swl_wr_ok(SWW_BAR2, 0, 4, 5) < 0 && swl_wr_ok(SWW_BAR2, 0x200000u, 0, 5) < 0 && swl_wr_ok(SWW_BAR0, 0x400000, 0, 5) < 0 && swl_wr_ok(SWW_ATU, 0x400000, 0, 5) < 0);
 	CHECK(swl_wr_ok(SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL && swl_wr_ok_from(SWT_WIN2_TAIL + 1, SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL_C && swl_wr_ok_from(SWT_WIN2_TAIL_C + 1, SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL_E &&
-	      swl_wr_ok_from(SWT_WIN2_TAIL_E + 1, SWW_CFG, 0, 0x84, 0x400000) < 0);
+	      swl_wr_ok_from(SWT_WIN2_TAIL_E + 1, SWW_CFG, 0, 0x84, 0x400000) == SWT_WIN2_TAIL_CON &&
+	      swl_wr_ok_from(SWT_WIN2_TAIL_CON + 1, SWW_CFG, 0, 0x84, 0x400000) < 0);
 	CHECK(swl_wr_ok(SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO && swl_wr_ok_from(SWT_WIN2_ZERO + 1, SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO_C && swl_wr_ok_from(SWT_WIN2_ZERO_C + 1, SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO_E &&
-	      swl_wr_ok_from(SWT_WIN2_ZERO_E + 1, SWW_CFG, 0, 0x84, 0) < 0);
+	      swl_wr_ok_from(SWT_WIN2_ZERO_E + 1, SWW_CFG, 0, 0x84, 0) == SWT_WIN2_ZERO_CON &&
+	      swl_wr_ok_from(SWT_WIN2_ZERO_CON + 1, SWW_CFG, 0, 0x84, 0) < 0);
 	{
 		unsigned v;
 
@@ -1674,7 +1676,7 @@ static void runc_deny_sweep(void)
 			CHECK(((swl_wt[v].flags & SWT_TW) != 0) == (v >= SWT_NV_VARS && v <= SWT_NV_RTLV) && (!(swl_wt[v].flags & SWT_TW) || (swl_wt[v].kind >= SWK_VARS && swl_wt[v].kind <= SWK_RTLV)) &&
 			      (!!(swl_wt[v].flags & SWT_TW) || swl_wt[v].kind == 0));
 	}
-	CHECK(SWT_N == 35 && SWT_N_D == 28 && SWT_N_C == 27 && SWT_N_B == 22 && SWT_WIN2_TAIL_C == 22 && SWT_NV_VARS == 23 && SWT_NV_TOKEN == 24 && SWT_NV_RTLV == 25 && SWT_WIN2_ZERO_C == 26);
+	CHECK(SWT_N == 37 && SWT_N_D == 28 && SWT_N_C == 27 && SWT_N_B == 22 && SWT_WIN2_TAIL_C == 22 && SWT_NV_VARS == 23 && SWT_NV_TOKEN == 24 && SWT_NV_RTLV == 25 && SWT_WIN2_ZERO_C == 26);
 }
 
 /* the stores that reached the bus other than the restore of cfg 0x84 (a refused store with the window moved runs that restore) */
@@ -2319,7 +2321,7 @@ static void rune(void)
 		/* refused shapes: read nothing past the header, still a success, the ARM back in reset */
 		{
 			static const uint32_t bb[][3] = { { 0x003d0000u, 0, 0 }, { 0x003d0000u, SWW_CON_MAX + 4u, 4 }, { 0x003d0000u, 64, 65 }, { 0x003d0002u, 64, 4 }, { 0x001ffff0u, 64, 4 },
-			                                  { 0x003ffff0u, 64, 4 }, { 0x0049f000u, 64, 4 } };
+			                                  { 0x0049fff0u, 64, 4 }, { 0x004a0000u, 64, 4 } };
 			for (k = 0; k < sizeof bb / sizeof bb[0]; k++) {
 				re_put(&f, &x);
 				f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = sh;
@@ -2328,6 +2330,33 @@ static void rune(void)
 				CHECK(re_run(&x) == 0 && x.con_lines == 0 && !f.running && strstr(logbuf, "W16 console buffer not read") != 0 && strstr(logbuf, "SWEET WLAN: FW ") == 0);
 			}
 		}
+		/* the buffer above 0x400000 (as observed: 0x0041533c, run wd7-oriole2) under the tail window, and one across 0x400000 read in order; cfg 0x84 ends at 0 */
+		{
+			static const uint32_t bufs[2] = { 0x0041533cu, 0x003ffff8u };
+			static const char t2[] = "abcdefgh\nijkl\n";
+			for (k = 0; k < 2; k++) {
+				re_put(&f, &x);
+				f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = sh;
+				ramarr[sh / 4 + SWW_SH_CONSOLE] = con;
+				ramarr[con / 4 + 2] = bufs[k]; ramarr[con / 4 + 3] = 8192; ramarr[con / 4 + 4] = 14;
+				for (i = 0; i < 4; i++) ramarr[bufs[k] / 4 + i] = 0;
+				for (i = 0; i < 14; i++) ramarr[bufs[k] / 4 + i / 4] |= (uint32_t)(uint8_t)t2[i] << (8 * (i % 4));
+				CHECK(re_run(&x) == 0 && x.con_lines == 2 && f.win2 == 0 && !f.running && x.flags == ELEVEL7 && strstr(logbuf, "SWEET WLAN: FW abcdefgh\nSWEET WLAN: FW ijkl\n") != 0);
+				CHECK(f.lastw.space == SWW_BAR0 && f.lastw.off == SWL_AGENT_RESET_CTL && f.lastw.val == 1u);     /* W17 last */
+			}
+			/* the tail window refused while reading the buffer: a stop, cfg 0x84 and the ARM restored */
+			re_put(&f, &x);
+			f.sh_bp = last; f.fw_up_us = 1; f.fw_sh = sh;
+			ramarr[sh / 4 + SWW_SH_CONSOLE] = con;
+			ramarr[con / 4 + 2] = bufs[0]; ramarr[con / 4 + 3] = 8192; ramarr[con / 4 + 4] = 14;
+			f.win2_stuck = f.nw + 8;                                /* the store of the console window (the 8th of run E: W15 5, W16 2, then this one) and later cfg 0x84 stores are ignored */
+			CHECK(re_run(&x) < 0 && x.stopped && !f.running && (f.ca.ctl & 1u) && f.win2 == 0 && x.row == 16);
+		}
+		/* the console window tuple only after the W16 window is back at 0 (its predecessor), even with cfg 0x84 at 0 */
+		re_put(&f, &x);
+		x.flags |= SWF_W15;
+		x.done |= (uint64_t)1 << SWT_WIN2_TAIL_E;
+		CHECK(swl_wr(&x, SWW_CFG, 0, SWW_CFG_WIN2, SWW_WIN_TAIL) == -SWW_E_ORDER && f.nw == n6 && f.win2 == 0);
 		/* a console address outside RAM below 0x400000: not read at all */
 		{
 			static const uint32_t ca[] = { 0x001ffff0u, 0x003e0002u, 0x003ffff0u, 0x00400000u, 0x0049a000u };

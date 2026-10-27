@@ -646,7 +646,7 @@ MUTANTS = [
     # --- patch 0155: the firmware console (reads only)
     ("console: size not bounded", [("|| x->con_size > SWW_CON_MAX ", "")], None),
     ("console: index beyond the size accepted", [(" ||\n\t    x->con_idx > x->con_size) {", ") {")], None),
-    ("console: buffer end not bounded", [("|| lim - x->con_buf < x->con_size ||", "||")], None),
+    ("console: buffer end not bounded", [("|| end - x->con_buf < x->con_size ||", "||")], None),
     ("console: unaligned buffer accepted", [("|| (x->con_buf & 3u) != 0 || x->con_size == 0", "|| x->con_size == 0")], None),
     ("console: header end not bounded", [("|| lim - c < SWW_CON_IDX + 4u) {", ") {")], None),
     ("console: above window 0 accepted", [("lim = end < SWW_TCM_BYTES ? end : SWW_TCM_BYTES;", "lim = end;")], None),
@@ -655,6 +655,10 @@ MUTANTS = [
     ("console: no line cut", [("if (ch == '\\n' || n == SWW_CON_LINE) {", "if (ch == '\\n') {")], None),
     ("console: last partial line dropped", [("\tif (n != 0) {\n\t\tline[n] = 0;", "\tif (0) {\n\t\tline[n] = 0;")], None),
     ("console: no extra time for the firmware", [("\t\t\tswl_delay(x, SWW_CON_US);", "")], None),
+    ("console: tail window without predecessor", [(".flags = SWT_ONCE | SWT_TAIL, .pred1 = SWT_WIN2_ZERO_E + 1, .off = SWW_CFG_WIN2, .val = SWW_WIN_TAIL,", ".flags = SWT_ONCE | SWT_TAIL, .off = SWW_CFG_WIN2, .val = SWW_WIN_TAIL,")], None),
+    ("console: tail window not restored", [("\tif (win != 0) {\n\t\tSWW_TRY(swl_wr(x, SWW_CFG, 0, SWW_CFG_WIN2, 0));\n\t}\n", "")], None),
+    ("console: tail window arms no window restore", [("[SWT_WIN2_TAIL_CON]  = { .row = 16, .run = 5, .space = SWW_CFG, .rgrp = SWW_RG_W84 | SWW_RG_CA,", "[SWT_WIN2_TAIL_CON]  = { .row = 16, .run = 5, .space = SWW_CFG, .rgrp = SWW_RG_CA,")], "EQUIVALENT: the W16 window tuple SWT_WIN2_TAIL_E armed the window group earlier in the same step and only swl_done (end of W16) clears x->armed, so the group is armed when the console window moves; kept for the case the console read ever moves out of W16"),
+    ("console: whole buffer under window 0", [("\t\t\tif (a >= SWW_WIN_TAIL && win == 0) {", "\t\t\tif (0) {")], None),
     ("console: not read", [("\tif (x->sh_addr != 0) {\n\t\tSWW_TRY(swl_con(x));", "\tif (0) {\n\t\tSWW_TRY(swl_con(x));")], None),
     ("run E stage: final line shared address", [("x->level, x->sh_addr, x->sh_polls, x->sh_n,", "x->level, 0u, x->sh_polls, x->sh_n,")], None),
 ]
