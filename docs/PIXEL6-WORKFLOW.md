@@ -90,7 +90,7 @@ Wi-Fi link test and XNU attach). After run 7 the phone needs a Power+VolDown hol
 | Bluetooth | surveyed (`docs/research/45-bluetooth-survey-oriole.md`): BCM4389 BT = HCI over USI16 UART `0x175B0000`, pins gpp16-2/gpp14-3/gpa6-6; iOS wants `/dev/uart.bluetooth` + `/dev/bt*` + BlueTool | `BCM.hcd` extracted (B0 done); next the shim UART/HCI_Reset probe (B1/B2) |
 | Brightness | xnu 0149: the service iOS BrightnessControl looks for (`backlight-control`, `brightness-nits` 16.16) maps nits to panel DBV; log-only by default, `sweetbright=1` sends DCS 0x51 via DSIM0 (`docs/research/46`) | next run: see `SWEET BL:` requests + the DSIM dump (mask bit 32); then a run with `sweetbright=1` (user present) |
 | Buttons | power key works (SWEET KEYS events on oriole); volume keys: driver loads (xnu 0087), never pressed in a run yet | press volume up/down in a run and check `SWEET KEYS: key=1/2` |
-| Battery | the 100 % is a static value: xnu 0061 is the Xiaomi (Qualcomm SPMI) driver, real only with `sweetbattery=1` on that PMIC; the Pixel 6 fuel gauge is a different chip | survey the oriole fuel gauge (I2C) |
+| Battery | the 100 % is a static value: xnu 0061 is the Xiaomi (Qualcomm SPMI) driver, real only with `sweetbattery=1` on that PMIC; the Pixel 6 fuel gauge is a different chip | designed (`docs/research/47-battery-fuel-gauge-oriole.md`): MAX77759 fuel gauge at 0x36 on HSI2C12 0x10D50000; next F1 read-only shim probe |
 | Vibration | not started (Cirrus haptics amp on I2C + its firmware from the factory image) | survey |
 | Audio, sensors | not started; behind the AOC co-processor (aoc@0x94000000) and its firmware/IPC | large |
 | Camera | not started (Google ISP stack) | last |
