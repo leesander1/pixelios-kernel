@@ -36,7 +36,7 @@ fi
 
 echo "== run B: iOS with touch, CPU rates, GPU power-up and the three GPU tests (15 min)"
 tools/xrun --kernel "$K" --board oriole --no-camera --gui --touch --dvfs 1803000,1836000,1826000 --gpu-handover \
-	--cpus 8 --duration 900 --restart 960,bootloader --overlay "$ov" --args "sweetiolog=- sweetsample=- sweetmali=1" \
+	--cpus 8 --duration 900 --restart 960,bootloader --overlay "$ov" --args "sweetiolog=- sweetsample=- sweetmali=1 sweetnull=backboardd,SpringBoard,pixos-gpu-test,pixos-gpu-launch" \
 	--fail-on 'panic\(cpu|Kernel trap at' --label oriole-gpu1-ios >"$out/run-b.txt" 2>&1
 echo "run B exit $?: $(head -1 "$out/run-b.txt")"
 
