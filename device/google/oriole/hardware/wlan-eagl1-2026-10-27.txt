@@ -106,3 +106,11 @@ the 0151-0153 replay (fires ~200 s after AppleCLCD start = ~+340 s; the 300 s ru
 - W17: CA7 back in reset (ioctl 0x1 reset_ctl 0x1 reset_st 0). "stage 3 level 7 done shared=0x00458d50 reads=12 words=16 vars=21052 token=0xeb70148f"
 - no panic, UI up, phone back in fastboot. The Pixel 6 firmware runs on the chip from XNU and reaches the host handshake.
 - Next (read-only): read the firmware console ring at console_addr during W16 (firmware boot log, version string); then the msgbuf rings (XNU driver work).
+
+## Runs wd7-oriole2 / wd7-oriole3 (kernels xnu-1ce7977 / xnu-2a369db, 0155 console read, first two versions): firmware boots again, console not yet read
+- both: CA7 released, shared area after 12 reads (+550 ms), flags 0x70030107, trap_addr 0, CA7 back in reset, no panic
+- the firmware's layout moves per boot [obs; guess: randomized from the rTLV seed]: shared 0x00458d50 / 0x003cff58 / 0x003f25ac; console_addr 0x0038b2c8 /
+  0x0038aba8 / 0x004367a4; wd7-oriole2 console: buffer 0x0041533c, size 8192, write index 1436 (1436 bytes of boot log waiting)
+- wd7-oriole2: the buffer is above 0x400000 and the first 0155 read only window 0: refused (logged). wd7-oriole3: the header itself above 0x400000: refused.
+  0155 now reads each console word under the window that holds it (cfg 0x84 between 0 and 0x400000, allowlisted, ends at 0).
+- note: `grep` sees usbnet.log as binary once firmware text is in it; use `grep -a`.
