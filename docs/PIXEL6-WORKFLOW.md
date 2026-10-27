@@ -78,7 +78,7 @@ unpacked on the phone (`pixelios-userland gpu/common/gzunpack.c`; the phone has 
 | Boot, lock screen, touch, keyboard | working (boots 5-8) | - |
 | GPU self-tests (clear, IOSurface, GLES 3.1 triangle) | pass | - |
 | CoreAnimation on the GPU | **works**: the whole UI draws via Mesa on the Mali-G78, GPU time ~2 ms/frame, no crashes (runs eagl2-6, `hardware/wlan-eagl1-2026-10-27.txt`) | home screen app icons are blank: build `gpu/eagl` 235ae9f (probes each sampled surface) and run it while someone opens the home screen |
-| Lag | the kernel copies every frame to the panel with the CPU: 11-25 ms per frame (patch 0145 timing) | **page flip** (user's choice): research done so far below; next = a read-only register dump patch (`sweetdpudump`), then the flip |
+| Lag | the kernel copies every frame to the panel with the CPU: 11-25 ms per frame (patch 0145 timing) | **page flip** (user's choice): research done so far below; next = the staged read-only dump (0147, `sweetdpudump=7`), then the flip |
 | Wi-Fi (BCM4389) | link chain S00-S34 ran on oriole, chip id 0x10034389; firmware extracted (`tools/extract-wlanfw.sh`, from the Android 12 factory zip) | rerun `--wlan-link=36` with `--timeout 1200`; xnu 0132 pins bluejay's firmware CRC, needs a per-board pin before the firmware-upload stages |
 | Bluetooth, camera | not started (bluetoothd is removed from launchd to stop its restart loop) | - |
 
@@ -93,6 +93,10 @@ unpacked on the phone (`pixelios-userland gpu/common/gzunpack.c`; the phone has 
 - DPU SysMMU v8 `sysmmu_dpu0/1/2` at `0x1C100000/0x1C110000/0x1C120000`: `CTRL` 0x0 (bit 0), `CFG` 0x4, `STATUS` 0x8, `VERSION` 0x34,
   per-VM `CTRL_VM` 0x8000 (bit 0), `FLPT_BASE` 0x800C. The DPU nodes list all three as `iommus`.
 - Boot framebuffer `0xFAC00000`, 1080x2400, stride 4320 (below 4 GB, so the bootloader may scan out with the SysMMU bypassed: unmeasured).
+- Run 7 hung the phone with the 0146 dump (a register read stalled the bus before the USB log was up; the watchdog is off, so it
+  needs a Power+VolDown hold). 0147 stages it: dump only at the 600th swap, a `reading <block>` line + 100 ms before each block,
+  `sweetdpudump` mask 1 DECON0 / 2 windows / 4 RDMA / 8 SysMMU global / 16 SysMMU VM 0. Run `sweetdpudump=7` first.
+- Lesson for any new MMIO read: never read an unproven block before the USB log is up, and mark each block in the log first.
 - Open: is the DPU SysMMU on at handoff (decides contiguous buffers vs page tables), which RDMA layer scans out, and whether a base-address
   write + `SHD_REG_UP_REQ` flips cleanly in command mode. The read-only dump answers the first two.
 

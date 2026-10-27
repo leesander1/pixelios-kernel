@@ -41,3 +41,9 @@ GPU runs 2-6 (same batch script, SKIP_A=1; userland gpu/eagl c6cd90e..bc4a1a0)
   1125x2436, the wallpaper) succeeded. Home screen not visited in this run.
 - texture2DRect appears only in QuartzCore's filter shaders (blur, gradient maps; strings of the iOS 16.7 cache), not in the layer
   content path, so the rect mapping does not explain the icons. Next: probe of sampled surfaces (gpu/eagl 235ae9f) on the home screen.
+
+Run 7 (eagl7, CI kernel 7275379 = xnu 0146, sweetdpudump=1, sweetfb_hz=60): the phone HUNG. usbnet.log empty (no enumeration),
+sweetrestart=960 never fired, phone absent from USB afterwards (needs a Power+VolDown hold; nothing persistent changed: RAM boot,
+read-only dump). Most likely a bus-stalling register read in the 0146 dump at AppleCLCD start (DECON window/WINCON pages or the DPU
+SysMMUs), which runs before the USB log is up, so the block is unknown. Fix: xnu 0147 (dump only at swap 600, "reading <block>" +
+100 ms before each block, mask 1 DECON / 2 windows / 4 RDMA / 8 SysMMU global / 16 SysMMU VM). Next run: sweetdpudump=7 first.

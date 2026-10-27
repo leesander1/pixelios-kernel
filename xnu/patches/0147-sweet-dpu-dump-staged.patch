@@ -1,0 +1,90 @@
+SWEET display register dump, staged (patch 0147): run 7 hung the phone in the 0146 dump at AppleCLCD start (a bus-stalling read, before the USB log was up). The dump now runs only at the 600th swap, logs 'reading <block>' before each block, and sweetdpudump is a mask: 1 DECON0, 2 windows, 4 DPP RDMA, 8 DPU SysMMU global, 16 DPU SysMMU VM 0.
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -216,6 +216,14 @@
+  */
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ 
++/*
++ * Patch 0147: run 7 (2026-10-27, logs/runs/20261027T150741Z-oriole-eagl7-ios) hung the phone with sweetdpudump=1: no USB log at all
++ * and the timed restart never fired, i.e. a register read stalled the bus during the dump at AppleCLCD start (before the USB log is
++ * up, so the failing block is unknown). Now: no dump at start (only at the 600th swap, when the USB log carries every line out), a
++ * "reading <block>" line before each block, and sweetdpudump is a bit mask so blocks can be tried one at a time:
++ *   1 DECON0_MAIN   2 DECON WINCON + WIN   4 DPP RDMA L0-L5   8 DPU SysMMU global registers   16 DPU SysMMU VM 0 registers
++ * Suggested first run: sweetdpudump=7 (the blocks the running display scans out from); SysMMUs (8, 16) separately afterwards.
++ */
+ static void
+ sweet_dpu_dump(const char *when)
+ {
+@@ -223,7 +231,7 @@
+ 	static vm_offset_t decon, win, wincon, rdma, mmu[3];
+ 	if (on < 0) {
+ 		int v = 0;
+-		on = (PE_parse_boot_argn("sweetdpudump", &v, sizeof(v)) && v != 0) ? 1 : 0;
++		on = PE_parse_boot_argn("sweetdpudump", &v, sizeof(v)) ? v : 0;
+ 	}
+ 	if (!on) {
+ 		return;
+@@ -237,10 +245,18 @@
+ 			mmu[i] = ml_io_map(0x1C100000 + 0x10000 * i, 0x9000);
+ 		}
+ 	}
++	IOLog("SWEET DPU: %s mask 0x%x\n", when, on);
+ #define SWEET_DPU_RD(b, o) (*(volatile uint32_t *)((b) + (o)))
++	if (on & 1) {
++	IOLog("SWEET DPU: reading decon\n");
++	IOSleep(100);   /* let the USB log carry the line out before a read that may stall */
+ 	IOLog("SWEET DPU: %s decon GLOBAL_CON 0x%08x TRIG_CON 0x%08x SHD_REG_UP_REQ 0x%08x shd GLOBAL_CON 0x%08x shd TRIG_CON 0x%08x\n", when,
+ 	    SWEET_DPU_RD(decon, 0x20), SWEET_DPU_RD(decon, 0x30), SWEET_DPU_RD(decon, 0x50), SWEET_DPU_RD(decon, 0x820),
+ 	    SWEET_DPU_RD(decon, 0x830));
++	}
++	if (on & 2) {
++	IOLog("SWEET DPU: reading wincon\n");
++	IOSleep(100);   /* let the USB log carry the line out before a read that may stall */
+ 	for (int w = 0; w < 6; w++) {
+ 		uint32_t con = SWEET_DPU_RD(wincon, 0x1000 * w);
+ 		if (w >= 2 && (con & 1) == 0) {
+@@ -251,18 +267,30 @@
+ 		    (con >> 4) & 7, w < 2 ? " geom" : " geom(win0)", SWEET_DPU_RD(g, 0x0), SWEET_DPU_RD(g, 0x4), SWEET_DPU_RD(g, 0x8),
+ 		    SWEET_DPU_RD(g, 0xC), SWEET_DPU_RD(g, 0x10), SWEET_DPU_RD(g, 0x14), SWEET_DPU_RD(g, 0x18), SWEET_DPU_RD(g, 0x1C));
+ 	}
+-	for (int l = 0; l < 6; l++) {
++	}
++	for (int l = 0; (on & 4) && l < 6; l++) {
++		IOLog("SWEET DPU: reading rdma L%d\n", l);
++		IOSleep(100);   /* let the USB log carry the line out before a read that may stall */
+ 		vm_offset_t b = rdma + 0x1000 * l;
+ 		IOLog("SWEET DPU: %s rdma L%d en 0x%08x in0 0x%08x src_size 0x%08x src_off 0x%08x img 0x%08x y8 0x%08x shd_y8 0x%08x stride1 0x%08x\n",
+ 		    when, l, SWEET_DPU_RD(b, 0x0), SWEET_DPU_RD(b, 0x8), SWEET_DPU_RD(b, 0x10), SWEET_DPU_RD(b, 0x14), SWEET_DPU_RD(b, 0x18),
+ 		    SWEET_DPU_RD(b, 0x40), SWEET_DPU_RD(b, 0x440), SWEET_DPU_RD(b, 0x54));
+ 	}
+-	for (int i = 0; i < 3; i++) {
++	for (int i = 0; (on & 8) && i < 3; i++) {
+ 		vm_offset_t m = mmu[i];
+-		IOLog("SWEET DPU: %s sysmmu_dpu%d ctrl 0x%08x cfg 0x%08x status 0x%08x flpt 0x%08x version 0x%08x ctrl_vm 0x%08x cfg_vm 0x%08x flpt_vm 0x%08x\n",
+-		    when, i, SWEET_DPU_RD(m, 0x0), SWEET_DPU_RD(m, 0x4), SWEET_DPU_RD(m, 0x8), SWEET_DPU_RD(m, 0xC), SWEET_DPU_RD(m, 0x34),
+-		    SWEET_DPU_RD(m, 0x8000), SWEET_DPU_RD(m, 0x8004), SWEET_DPU_RD(m, 0x800C));
++		IOLog("SWEET DPU: reading sysmmu_dpu%d global\n", i);
++		IOSleep(100);   /* let the USB log carry the line out before a read that may stall */
++		IOLog("SWEET DPU: %s sysmmu_dpu%d ctrl 0x%08x cfg 0x%08x status 0x%08x flpt 0x%08x version 0x%08x\n",
++		    when, i, SWEET_DPU_RD(m, 0x0), SWEET_DPU_RD(m, 0x4), SWEET_DPU_RD(m, 0x8), SWEET_DPU_RD(m, 0xC), SWEET_DPU_RD(m, 0x34));
++	}
++	for (int i = 0; (on & 16) && i < 3; i++) {
++		vm_offset_t m = mmu[i];
++		IOLog("SWEET DPU: reading sysmmu_dpu%d vm0\n", i);
++		IOSleep(100);   /* let the USB log carry the line out before a read that may stall */
++		IOLog("SWEET DPU: %s sysmmu_dpu%d ctrl_vm 0x%08x cfg_vm 0x%08x flpt_vm 0x%08x\n",
++		    when, i, SWEET_DPU_RD(m, 0x8000), SWEET_DPU_RD(m, 0x8004), SWEET_DPU_RD(m, 0x800C));
+ 	}
++	IOLog("SWEET DPU: %s done\n", when);
+ #undef SWEET_DPU_RD
+ }
+ 
+@@ -340,7 +368,6 @@
+ 	OSSafeReleaseNULL(ns);
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+-	sweet_dpu_dump("start");     /* patch 0146 */
+ 	return true;
+ }
+ 
