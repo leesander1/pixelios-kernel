@@ -86,7 +86,8 @@ Wi-Fi link test and XNU attach). After run 7 the phone needs a Power+VolDown hol
 | CoreAnimation on the GPU | **works**: the whole UI draws via Mesa on the Mali-G78, GPU time ~2 ms/frame, no crashes (runs eagl2-6, `hardware/wlan-eagl1-2026-10-27.txt`) | home screen app icons are blank: build `gpu/eagl` 235ae9f (probes each sampled surface) and run it while someone opens the home screen |
 | Lag | the kernel copies every frame to the panel with the CPU: 11-25 ms per frame (patch 0145 timing) | **page flip** (user's choice): research done so far below; next = the staged read-only dump (0147, `sweetdpudump=7`), then the flip |
 | Wi-Fi (BCM4389) | link chain S00-S34 ran on oriole, chip id 0x10034389; firmware extracted (`tools/extract-wlanfw.sh`, from the Android 12 factory zip) | `device/google/oriole/batch-wlan2.sh`: A = `--wlan-link=36` with 1200 s, B = XNU read-only attach + container check (level 2); C (`RUN_C=1`, ask the user first) = level 5 chip RAM writes. Level 6 (start the chip): the pin is per board since xnu 0148 (ADT `/sweet-wlan` `board`; oriole 1607051 B, crc32 0x54b872bf). Note: the glue mutant 'CFG clause kept as a string needle' fails to compile under macOS clang (pre-existing; run the mutants on Linux for a clean result) |
-| Bluetooth, camera | not started (bluetoothd is removed from launchd to stop its restart loop) | - |
+| Bluetooth | surveyed (`docs/research/45-bluetooth-survey-oriole.md`): BCM4389 BT = HCI over USI16 UART `0x175B0000`, pins gpp16-2/gpp14-3/gpa6-6; iOS wants `/dev/uart.bluetooth` + `/dev/bt*` + BlueTool | B0 (extract the `.hcd`), then the shim UART/HCI_Reset probe |
+| Camera | not started | - |
 
 ### Page flip research so far (sources in `~/pixelios-artifacts/refs/`, outside git)
 
