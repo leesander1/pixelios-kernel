@@ -1,6 +1,6 @@
 #!/bin/bash
 # One hardware test cycle -> ONE short report (docs/AUTOMATION.md). Progress goes to <run dir>/xrun.log, stdout is the report.
-#   tools/xrun --kernel K [--adt A | --board bluejay|oriole] [--cpus N] [--qr S|off] [--restart S] [--args "boot-args"] [--gui] [--rails] [--gpu-handover] [--wlan-hold [--wlan-level 1|2]] [--dvfs K0,K1,K2|read] [--no-usbnet | --usbdma]   (USB UDP log is ON by default since 2026-10-22; QR only with --qr S) (always --rw: a read-only root panics in mount(8))
+#   tools/xrun --kernel K [--adt A | --board bluejay|oriole] [--cpus N] [--qr S|off] [--restart S] [--args "boot-args"] [--gui] [--rails | --touch] [--gpu-handover] [--wlan-hold [--wlan-level 1|2]] [--dvfs K0,K1,K2|read] [--no-usbnet | --usbdma]   (USB UDP log is ON by default since 2026-10-22; QR only with --qr S) (always --rw: a read-only root panics in mount(8))
 #              [--reader "qr-log.py options"]   (e.g. "--workers 3 --average 3 --tiles 1"; QL2 boot-args go in --args: sweetqr_fmt=1|2 sweetqr_ver sweetqr_ecc sweetqr_tiles sweetqr_ms sweetqr_k sweetqr_red sweetqr_fec sweetqr_hold)
 #              [--expect REGEX]... [--expect-absent REGEX]... [--duration S] [--label NAME] [--no-flash-check]
 #              [--intent gpu|timing|wlan]   (tools/run-intents.json: exit 2 before any build when the flags/boot-args that intent needs are missing or a forbidden one is present; a label implying an intent with no/none/other --intent exits 2 unless XRUN_INTENT_OK=1)
@@ -12,6 +12,8 @@
 #                  --early / --stop-on turn --remote-reset ON by default (observed working 2026-10-24, run bl1-remote3: phone in fastboot ~95 s after the stop instead of waiting ~700 s); --no-remote-reset disables it.
 #   --fail-on RX   (repeatable) end the run as soon as RX appears in the log and score it FAIL: a failing run no longer waits out --restart. With --early/--stop-on these default to
 #                  `Kernel trap at|panic\(cpu|panic:|Assertion failed`; --fail-on none disables the defaults.
+#   --touch        working touch (observed on bluejay 2026-10-22 and oriole 2026-10-27): --rails plus the boot-args sweettouchmux=1 sweettouchcs=1 and the USI11
+#                  oscillator-clock poke of xnu patch 0095. They go BEFORE --args, so an explicit sweettouch*= in --args wins (the last occurrence counts).
 #   --no-camera    do not start the ESP camera capture (saves ~5 s, and works without the camera; the report then has no SCREEN line)
 #   --lock-wait S  the phone lock (tools/phone-lock, TP-020) is taken only AFTER the image is built, right before the phone is touched; wait up to S s
 #                  (queued, in arrival order) for another owner to finish, default 0 = fail at once with who holds it. Under `phone-lock run` it is already held.
@@ -36,9 +38,10 @@ while [ $# -gt 0 ]; do case "$1" in
 	--kernel) kernel=$2; shift 2 ;; --adt) adt=$2; shift 2 ;; --board) board=$2; shift 2 ;; --cpus) cpus=$2; shift 2 ;;
 	--qr) qr=$2; shift 2 ;; --restart) restart=$2; shift 2 ;; --args) args=$2; shift 2 ;; --duration) duration=$2; shift 2 ;;
 	--label) label=$2; shift 2 ;; --expect) exps+=("expect=$2"); rawexp+=("$2"); shift 2 ;; --stop-on) stops+=("$2"); shift 2 ;; --early) early=1; shift ;; --hard-timeout) hard=$2; shift 2 ;; --lock-wait) lockwait=$2; [[ $lockwait =~ ^[0-9]+$ ]] || { echo "RESULT: ERROR --lock-wait needs whole seconds"; exit 2; }; shift 2 ;; --full) full=1; shift ;; --remote-reset) remote=1; shift ;; --no-remote-reset) noremote=1; shift ;; --fail-on) failons+=("$2"); shift 2 ;; --no-camera) nocam=1; shift ;; --expect-absent) abs+=("expect_absent=$2"); shift 2 ;;
-	--rw) rw=--rw; shift ;; --rails) rails=--rails; shift ;; --gpu-handover) handover=--gpu-handover; shift ;; --wlan-hold) wlan=--wlan-hold; shift ;; --wlan-level) wlanlvl=$2; shift 2 ;; --dvfs) dvfs=(--dvfs "$2"); shift 2 ;; --gui) gui=--gui; shift ;; --usbnet) usbnet=--usbnet; shift ;; --no-usbnet) usbnet=""; shift ;; --usbdma) usbnet=--usbnet; usbdma=--usbdma; shift ;; --no-flash-check) check=0; shift ;;
+	--rw) rw=--rw; shift ;; --rails) rails=--rails; shift ;; --touch) rails=--rails; touch=1; shift ;; --gpu-handover) handover=--gpu-handover; shift ;; --wlan-hold) wlan=--wlan-hold; shift ;; --wlan-level) wlanlvl=$2; shift 2 ;; --dvfs) dvfs=(--dvfs "$2"); shift 2 ;; --gui) gui=--gui; shift ;; --usbnet) usbnet=--usbnet; shift ;; --no-usbnet) usbnet=""; shift ;; --usbdma) usbnet=--usbnet; usbdma=--usbdma; shift ;; --no-flash-check) check=0; shift ;;
 	--intent) intent=$2; shift 2 ;; --dry-run) dry=1; shift ;; --from-dir) fromdir=$2; shift 2 ;; --reader) reader=$2; shift 2 ;; --overlay) overlay=$2; shift 2 ;; --wlanfw) wlanfw=$2; shift 2 ;;
 	*) echo "unknown option $1 (see the header of tools/xrun)" >&2; exit 2 ;; esac; done
+[ "${touch:-0}" = 0 ] || args="sweettouchmux=1 sweettouchcs=1 sweettouchpoke=m:10c00640=0=10;d:100;m:10c0180c=5=f;${args:+ $args}"   # --touch (header)
 export PIXOS_DEVICE=$board; . tools/phone-target.sh
 . tools/hostcompat.sh   # timeout, sha256, LSUSB on a macOS host
 [ "$dry" = 1 ] || phone_target || { echo "RESULT: ERROR --board/PIXOS_DEVICE '$board' is not a supported phone (tools/phone-targets.txt)"; exit 2; }
