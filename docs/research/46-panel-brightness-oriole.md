@@ -37,7 +37,7 @@ auto-brightness have no effect [obs: no brightness path in xnu 0046/0077; IOMFB 
 |---|---|---|
 | L1 | Read-only: DSIM0 `CMD_CONFIG`, `FIFOCTRL`, `CMD_STATUS`, `SFR_CTRL` (+0x64) added to the staged DPU dump (new mask bit 32, after DECON/RDMA have been read safely at least once: the run 7 lesson) | read-only; same caution as 0147 |
 | L2 | Boot-arg `sweetbright=N` (4..4095, refused otherwise): at the 600th swap, if `PKT_GO_EN` = 0 and both FIFOs are empty, one `51 HI LO` long write, poll FIFOCTRL for empty (<= 20 ms), log CMD_STATUS. Visible test: N=200 then N=4000 | a wrong packet = a glitch or the panel ignoring it; values stay inside Android's own range |
-| L3 | iOS brightness: find how backboardd sets brightness (an IOMobileFramebuffer selector or a backlight IOService property), translate its value to 4..4095 and send it as in L2 | needs the selector map: disassembly of IOMobileFramebuffer / backboardd (the `ipsw` tool research 33 used is not installed on this host) |
+| L3 | iOS brightness: find how backboardd sets brightness (an IOMobileFramebuffer selector or a backlight IOService property), translate its value to 4..4095 and send it as in L2 | found (section 4a): BrightnessControl `brightness-nits` on a `backlight-control` service; implemented in xnu 0149 |
 
 ## 4a. iOS side (found 2026-10-27 with ipsw on the iOS 16.7 cache, read-only)
 
