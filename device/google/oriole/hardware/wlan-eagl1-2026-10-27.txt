@@ -92,3 +92,17 @@ the 0151-0153 replay (fires ~200 s after AppleCLCD start = ~+340 s; the 300 s ru
 - "SWEET WLAN: stage 3 level 6 done w14 old=0xba3ef000 new=0xb8cef214 vars=21052 token=0xeb70148f crc=0x292de73a"; no panic
 - NOTE: level 6 (patch 0132) only stores the reset vector; the ARM stays halted (W6 IOCTL 0x21). Releasing it = patch 0154 (level 7: W15 release,
   W16 shared-area poll, W17 back into reset).
+
+## Run wd7-oriole1 (2026-10-27, kernel xnu-253327d = 0145-0154, sweetwlan=7 sweetreplay=WLAN, --duration 480): Wi-Fi level 7 PASS, THE FIRMWARE BOOTS
+- levels 1-6 as before (W14 0xba3ef000 := 0xb8cef214), then W15: CA7 wrapper after the reset sequence ioctl 0x1 reset_ctl 0 reset_st 0 (CPUHALT clear)
+- W16: the last RAM word changed from the token 0xeb70148f to 0x00458d50 at read 11 (+550 ms after the release): the pciedev_shared_t address
+- shared area (raw words, decoded with brcmfmac pcie.c @ v6.12 adc21867, :212-233):
+    +0x00 flags 0x70030107: version 0x07 (BRCMF_PCIE_SHARED_VERSION_MASK 0xFF; 7 = BRCMF_PCIE_MAX_SHARED_VERSION), DMA_INDEX 0x10000 set,
+          HOSTRDY_DB1 0x10000000 set, DMA_2B_IDX 0x100000 clear; bits 0x100, 0x20000, 0x60000000 not decoded
+    +0x04 trap_addr 0 (no firmware trap), +0x08/+0x0C assert addresses 0, +0x10 assert line 0
+    +0x14 console_addr 0x0038b2c8 (BRCMF_SHARED_CONSOLE_ADDR_OFFSET 20)
+    +0x1C 0x3eef169b [guess: fwid]; +0x20 0x05ff049f: max_rxbufpost (u16 at 34) = 0x05ff = 1535
+    +0x24 rx_dataoffset 0; +0x28 h2d mailbox 0x0047e33c; +0x2C d2h mailbox 0x0047e340; +0x30 ring info 0x0047e000
+- W17: CA7 back in reset (ioctl 0x1 reset_ctl 0x1 reset_st 0). "stage 3 level 7 done shared=0x00458d50 reads=12 words=16 vars=21052 token=0xeb70148f"
+- no panic, UI up, phone back in fastboot. The Pixel 6 firmware runs on the chip from XNU and reaches the host handshake.
+- Next (read-only): read the firmware console ring at console_addr during W16 (firmware boot log, version string); then the msgbuf rings (XNU driver work).
