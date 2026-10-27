@@ -73,3 +73,15 @@ the 0151-0153 replay (fires ~200 s after AppleCLCD start = ~+340 s; the 300 s ru
 - chip id 0x10034389; EROM cores: 0x800 rev 70 (ChipCommon), 0x83c rev 72 (PCIe2), 0x847 rev 9 (ARM CA7), 3 x 0x812 rev 86 (D11), 0x851 rev 4,
   0x849 rev 9 (SYS_MEM), 0x857 rev 5, 0x840 rev 20, 0x827 rev 40 (PMU), 0x135 x3, 0x31 x3, 0xfff; PMU and wrapper reads as on bluejay
 - "SWEET WLAN: stage 1 done level 2 (read-only)". Next: level 5 (chip RAM writes, RUN_C=1, needs the user's OK), then level 6 (start the chip).
+
+## Run wd5-oriole1 (2026-10-27 21:17Z, kernel xnu-cf2edfd = 0145-0153, sweetwlan=5 sweetreplay=WLAN, --duration 480): Wi-Fi level 5 PASS
+- level 2 attach as before (board oriole pin 1607051 / 0x54b872bf, container ok, chip 0x10034389, same cores), then "stage 3 level 5 starts"
+- W0 EP command 0x100002 BAR2 0x60400004, cfg84 0 cfg88 0x80080; W1/W2 ATU r2 -> BAR2 0x60400000 + 0x400000; W3 SRPWR powerctl 0x30300
+- W4 SYS_MEM wrapper before: ioctl 0 reset_ctl 0x1 reset_st 0; W5 28 banks x 0x20000 (bankinfo 0xf00060f), RAM 0x2a0000, ram_end 0x4a0000
+- W6 wrapper 0x18120000 (ARM CA7) after reset: ioctl 0x21 reset_ctl 0 reset_st 0 (halted, not started)
+- W8/W9 window cfg 0x84 := 0x400000, last RAM word 0x49fffc := 0 read back 0, window restored
+- W10 firmware 25 chunks, every chunk crc == source crc (1607051 bytes)
+- W11 NVRAM text 0x49adc0..0x49fff8 varsize 21052 crc 0x292de73a read back; W12 token 0xeb70148f at 0x49fffc read back;
+  W13 rTLV 0x49ad38..0x49adbc (128 B, type 0xfeedc0de) read back; window restored
+- "SWEET WLAN: stage 3 level 5 done vars=21052 token=0xeb70148f crc=0x292de73a"; no refusal, no panic; UI up (lock screen), phone back in fastboot
+- Next: level 6 (release the ARM CA7 reset at the pinned vector = the chip runs the firmware): needs the user's OK.
