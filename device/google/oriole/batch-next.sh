@@ -14,7 +14,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 2
 export PIXOS_DEVICE=oriole
 K=${KERNEL:-$HOME/pixelios-artifacts/xnu-49194a5/kernel.development.sweet}
-OV=${OVERLAY:-/private/tmp/claude-501/-Users-leesander-code/c532c88b-2006-4b27-87f8-1154b27635b8/scratchpad/overlay-eagl7}
+OV=${OVERLAY:-$HOME/pixelios-artifacts/overlays/eagl7}
 [[ -f $K ]] || { echo "error: no kernel $K (tools/ci-kernel --commit <sha of 0148>)" >&2; exit 2; }
 [[ -f $OV/usr/local/lib/libpixosgl.dylib.gz ]] || { echo "error: no overlay $OV (pixelios-userland gpu/eagl/build-eagl.sh BASE_PLIST $OV)" >&2; exit 2; }
 tools/phone-lock run --owner batch-next -- tools/to-fastboot.sh 600 >/dev/null 2>&1 || { echo "phone not in fastboot (hold Power+VolDown, then rerun)"; exit 1; }

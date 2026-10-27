@@ -64,7 +64,8 @@ unpacked on the phone (`pixelios-userland gpu/common/gzunpack.c`; the phone has 
   the loader `libpixosgl-load.dylib`, `pixos-gz-unpack` + root job `org.pixelios.gl-unpack`, `pixosgl.crash`. Boot it with
   `--overlay OUT_DIR --args "sweetmali=1 sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/lib/libpixosgl-load.dylib
   sweetnull=backboardd,SpringBoard,pixos-gz-unpack sweetfb_hz=60"` plus `--gpu-handover`. `BASE_PLIST` = the root's original
-  `launchd.plist` (a copy is kept in the session scratchpad; regenerate it from the iOS root image if missing).
+  `launchd.plist`: `~/pixelios-artifacts/overlays/launchd.orig.plist`. Built overlays are kept in `~/pixelios-artifacts/overlays/<name>/`
+  (`eagl7` = gpu/eagl 235ae9f with the icon surface probe).
 - Log lines: `pixos-eagl:` (stand-in), `pixos-gl:` / `pixos-drm:` / `MESA:` (Mesa side), `SWEET MALI:` (kernel GPU driver), `SWEET FB:`
   (kernel framebuffer). The stand-in prints frames, fps and "flush+GPU wait ms per frame" every 30 s.
 - Crash backtraces: `build-eagl.sh` keeps an unstripped `libpixosgl.dylib.sym`; find the load base from the `CRASH backboardd bt` frames
@@ -73,6 +74,10 @@ unpacked on the phone (`pixelios-userland gpu/common/gzunpack.c`; the phone has 
   a few seconds of display, not the phone. `touch /usr/local/lib/pixosgl.off` in an overlay disables it.
 
 ## 5. Where each thread stands (2026-10-27)
+
+**Next phone session:** `device/google/oriole/batch-next.sh` runs everything queued (the read-only DPU dump with the GPU overlay, then the
+Wi-Fi link test and XNU attach). After run 7 the phone needs a Power+VolDown hold first.
+
 
 | Thread | State | Next step |
 |---|---|---|
