@@ -1,0 +1,56 @@
+SWEET console replay via IOLog (patch 0153): run wd2-oriole3 printed no REPLAY line at all; the replay now writes its output with IOLog (as every kernel line that reaches the USB log does) and logs "SWEET REPLAY: armed" / "firing" so the missing step shows.
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -828,6 +828,7 @@
+  * replay holds only the last 64 KiB, and the oriole run wd2-oriole1 (2026-10-27) lost all its SWEET WLAN lines that way. The ring is the
+  * 4 MiB console copy of patch 0047; bytes [total - SIZE, total) at the call are scanned, lines over 255 bytes are cut, at most 96 lines.
+  */
++extern void IOLog(const char *format, ...) __printflike(1, 2);   /* patch 0153: the lines that reach the USB log are IOLog lines */
+ void sweet_log_replay(const char *needle);
+ 
+ void
+@@ -843,7 +844,7 @@
+ 	if (nl == 0) {
+ 		return;
+ 	}
+-	printf("REPLAY: lines containing \"%s\" in the console ring (%llu bytes)\n", needle, end - start);
++	IOLog("REPLAY: lines containing \"%s\" in the console ring (%llu bytes)\n", needle, end - start);
+ 	for (uint64_t p = start; p < end && shown < 96; p++) {
+ 		char c = sweet_log_ring[p % SWEET_LOG_SIZE];
+ 		if (c != '\n') {
+@@ -854,12 +855,12 @@
+ 		}
+ 		line[n] = '\0';
+ 		if (strnstr(line, needle, n + 1) != NULL && strncmp(line, "REPLAY: ", 8) != 0) {
+-			printf("REPLAY: %s\n", line);
++			IOLog("REPLAY: %s\n", line);
+ 			shown++;
+ 		}
+ 		n = 0;
+ 	}
+-	printf("REPLAY: done, %d lines\n", shown);
++	IOLog("REPLAY: done, %d lines\n", shown);
+ }
+ 
+ /*
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -263,7 +263,10 @@
+ 		return;
+ 	}
+ 	if (PE_parse_boot_argn("sweetreplay", replay, sizeof(replay)) && replay[0] != '\0') {
++		IOLog("SWEET REPLAY: firing for \"%s\"\n", replay);        /* patch 0153 */
+ 		sweet_log_replay(replay);
++	} else {
++		IOLog("SWEET REPLAY: firing, but no usable sweetreplay= value\n");
+ 	}
+ }
+ 
+@@ -283,6 +286,7 @@
+ 		return;
+ 	}
+ 	thread_call_t tc = thread_call_allocate(sweet_fb_replay_tc, NULL);
++	IOLog("SWEET REPLAY: armed (200 s), thread_call %p\n", tc);   /* patch 0153 */
+ 	if (tc != NULL) {
+ 		uint64_t deadline;
+ 		nanoseconds_to_deadline(200ull * NSEC_PER_SEC, &deadline);
