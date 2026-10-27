@@ -14,8 +14,8 @@
 #   (xnu 0124: READ-ONLY attach, chip id, cores, the three D11 wrapper reads) + --wlanfw (xnu 0128: the firmware container is found at
 #   /chosen/memory-map WLANFW and its CRCs match). Expect "SWEET WLAN: stage 1 done level 2".
 # Run C (RUN_C=1 only), 6 min: the same with sweetwlan=5 (xnu 0129-0131: guarded writes into the chip's RAM: SYS_MEM/ARM wrappers, the
-#   firmware image, NVRAM, length token, rTLV; observed OK on bluejay, run C). The chip is NOT started (level 6 = reset vector is
-#   pinned to bluejay's firmware, xnu 0132). Everything written is chip RAM, lost when the module power goes at the next reset.
+#   firmware image, NVRAM, length token, rTLV; observed OK on bluejay, run C). The chip is NOT started (level 6 = the reset vector,
+#   pinned per board since xnu 0148, is a later, separate step). Everything written is chip RAM, lost when the module power goes at the next reset.
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 2
 export PIXOS_DEVICE=oriole
