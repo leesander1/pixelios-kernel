@@ -1,0 +1,28 @@
+Pixel 6 (oriole): first Wi-Fi link run and first CoreAnimation-on-GPU run, 2026-10-27 (host UTC 12:26-13:00)
+
+Batch: device/google/oriole/batch-eagl1.sh; kernel xnu-04457e5; userland pixelios-userland 3035e25 (gpu/eagl, overlay 4.9 MB)
+
+Run A (shim, --wlan-link=36, logs/probe/20261027T122610Z-wlan-oriole1_): RESULT TIMEOUT at 600 s (shim still running)
+- LINK table sha=1bdc95bc71495d3a rows=1412 N=36 (same table as bluejay)
+- S00-S34 ok on oriole: link up (S23 rd=0x03007A11), endpoint config dword 0 = 0x438914E4 (S27), BAR0 chip id 0x10034389 (S30, S31),
+  EROM dump ended at EOT (S32), PMU / ARM CA7 / SYS_MEM wrapper state (S33), SRPWR domain 1 ALREADY up (powerctl 0x00030300, no write, S34)
+- S35/S36 and the teardown summary are not in the log: the USB log is slow on this run (S34 at +705 s; bluejay ran S00-S36 in ~3 min),
+  so probe-run stopped waiting at 600 s; the phone came back by itself in recovery ~6 min after the last line (normal after a shim run)
+- Next: --timeout 1200 (batch-eagl1.sh now), or a pstore read to see whether S35/S36/teardown ran
+Firmware: tools/extract-wlanfw.sh on oriole-sd1a.210817.015.a4 (factory zip, Android 12): fw_bcmdhd.bin 1607051 B crc32 54b872bf,
+  bcmdhd.cal 24168 B, bcmdhd_clm.blob 17396 B -> ~/pixelios-artifacts/wlan-fw-oriole-sd1a.210817.015.a4/wlanfw.bin (outside git).
+  xnu 0132 pins bluejay's firmware (1764018 B, crc 0x1153ccff): level 6 refuses this image until the pin is per board.
+
+Run B (iOS, overlay gpu/eagl, sweetenv=backboardd:DYLD_INSERT_LIBRARIES=/usr/local/lib/libpixosgl-load.dylib, logs/runs/20261027T124524Z-oriole-eagl1-ios)
+- pixos-gz-unpack (root job) unpacked libpixosgl.dylib; backboardd's loader waited 8.2 s for it, then loaded it
+- EAGLContext stand-in installed (14 methods); CoreAnimation asked initWithAPI:3 and got "GLES 3.1 context on Mali-G78 MC20 (Panfrost)" in 122-186 ms
+- The GLI slot numbers from the macOS gliDispatch.h are the ones CoreAnimation calls (get_string 117, gen_textures 98, the ARB shader object
+  calls 591-630, EXT framebuffer 672-677, fence 779/781, finish_object_APPLE 470 ...): shaders compiled and linked (no failure logged),
+  draws ran, first frame finished on the GPU ~6 s after start, 120 frames in 6-11 s
+- Not on screen: the scanout surfaces are 'b3a8' (0x62336138, 1125x2436, 4 B/px) and were refused by the format table; other formats seen:
+  'w30r' 131x, format 0 (600x600) 86x, 'L008' 24x, 'LA08' 14x, '420f' 12x
+- backboardd crashed 7 times (SIGSEGV), always glTexImage2D -> st_TexImage -> u_default_texture_subdata -> util_copy_rect reading past the
+  end of CoreAnimation's source image (905-px rows at a 1105-px stride from a 1105x1160x4 buffer); the 120-frame crash-counter reset came
+  before each crash, so the CPU fallback never engaged. No kernel panic. Touch and SpringBoard kept running.
+- Fixed for run 2 (userland gpu/eagl): b3a8/w30r/format 0/LA08 imports, Apple row bytes + a VM-range guard on uploads (log + drop instead of
+  crash), BGRA data with RGBA internal format, luminance swizzles, crash counter resets only after 2 min of GPU frames
