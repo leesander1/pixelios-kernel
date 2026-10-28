@@ -1,0 +1,43 @@
+# Battery fuel gauge F1 on oriole, run fg1-oriole1 (2026-10-27, kernel xnu-27ad378 = 0145-0156, sweetfg=1 sweetfgdelay=200)
+
+Read-only (xnu 0156). No panic, UI up, phone back in fastboot. Raw lines:
+
+    SWEET FG: cmu 0x10c00000: OPTION[0x800]=0xf1000000 bus_mux[0x600]=0x10 usi_mux[0x650]=0x10 usi_auto[0x654]=0 div[0x1810]=0
+    SWEET FG: cmu gates: ipclk_5[0x2030]=0x200000 pclk_5[0x2050]=0x200000 rstnsync[0x206c]=0x200000 QCH[0x3030]=0x3f0002
+    SWEET FG: sysreg USI12 mode (0x10c21010) = 0x4 (I2C = 0x4, so I2C)
+    SWEET FG: pin scl bank 0x10c40060[4] func=2 dat=1 pud=0x3
+    SWEET FG: pin sda bank 0x10c40060[5] func=2 dat=1 pud=0x3
+    SWEET FG: hsi2c CTL          [0000] = 0x00000048
+    SWEET FG: hsi2c FIFO_CTL     [0x04] = 0x00080083
+    SWEET FG: hsi2c TRAILING_CTL [0x08] = 0x00ffffff
+    SWEET FG: hsi2c CLK_CTL      [0x0c] = 0000000000
+    SWEET FG: hsi2c CLK_SLOT     [0x10] = 0000000000
+    SWEET FG: hsi2c INT_ENABLE   [0x20] = 0x00000080
+    SWEET FG: hsi2c INT_STATUS   [0x24] = 0000000000
+    SWEET FG: hsi2c ERR_STATUS   [0x2c] = 0000000000
+    SWEET FG: hsi2c FIFO_STATUS  [0x30] = 0x01000100
+    SWEET FG: hsi2c CONF         [0x40] = 0x980110ff
+    SWEET FG: hsi2c AUTO_CONF    [0x44] = 0x00030001
+    SWEET FG: hsi2c TIMEOUT      [0x48] = 0x000000ff
+    SWEET FG: hsi2c MANUAL_CMD   [0x4c] = 0000000000
+    SWEET FG: hsi2c TRANS_STATUS [0x50] = 0x00080001
+    SWEET FG: hsi2c TIMING_HS1   [0x54] = 0x0180ff00
+    SWEET FG: hsi2c TIMING_HS2   [0x58] = 0x030003f8
+    SWEET FG: hsi2c TIMING_HS3   [0x5c] = 0x00ff0000
+    SWEET FG: hsi2c TIMING_FS1   [0x60] = 0x01f0ff00
+    SWEET FG: hsi2c TIMING_FS2   [0x64] = 0x030003e0
+    SWEET FG: hsi2c TIMING_FS3   [0x68] = 0x003e0000
+    SWEET FG: hsi2c TIMING_SLA   [0x6c] = 0000000000
+    SWEET FG: hsi2c ADDR         [0x70] = 0x00009400
+    SWEET FG: usi CON[0xc4] = 0 OPTION[0xc8] = 0x1
+    SWEET FG: F1 done
+
+Reading [obs unless tagged]:
+- U1 closed: ABL leaves USI12 clocked (ipclk_5 / pclk_5 / rstnsync CG_VAL bit 21 set, QCH 0x3f0002 like USI11), the USI mux on its PERIC1 source
+  (0x650 = 0x10, MUX_SEL bit 4), sysreg USI12 mode = I2C (0x4), USI_OPTION 0x1, both pads in function 2 with pull-up (pud 0x3) and high (bus idle).
+- The controller is set up: CONF 0x980110ff, AUTO_CONF 0x00030001, timing FS1/FS2/FS3 0x01f0ff00/0x030003e0/0x003e0000 (fast mode values
+  from ABL), FIFO_STATUS 0x01000100 (TX and RX FIFO empty bits [guess on the bit names: i2c-exynos5.c FIFO_STATUS layout to confirm]),
+  TRANS_STATUS 0x00080001, INT_STATUS 0, ERR_STATUS 0.
+- ADDR 0x9400 = slave address field (bits 19:10) 0x25 [guess on the field: HSI2C_SLV_ADDR_MAS = (x & 0x3ff) << 10 in i2c-exynos5.c]: ABL's last
+  transaction on this bus was to 0x25, not the gauge (0x36).
+- Next: F2 = one auto-mode transaction per register (pointer write + 2-byte read) to 0x36 using ABL's timing: DevName 0x21, then RepSOC, VCell.
