@@ -114,3 +114,35 @@ the 0151-0153 replay (fires ~200 s after AppleCLCD start = ~+340 s; the 300 s ru
 - wd7-oriole2: the buffer is above 0x400000 and the first 0155 read only window 0: refused (logged). wd7-oriole3: the header itself above 0x400000: refused.
   0155 now reads each console word under the window that holds it (cfg 0x84 between 0 and 0x400000, allowlisted, ends at 0).
 - note: `grep` sees usbnet.log as binary once firmware text is in it; use `grep -a`.
+
+## Run wd7-oriole4 (kernel xnu-07b0ad3 = 0145-0155, sweetwlan=7): the firmware's own boot log, read from the chip (console 0x0045a450, buffer 0x00414fac, 1436 of 8192 bytes)
+- firmware: "RTE (PCIE-MSGBUF) 20.25.485.19 (wlan=r945875 c1 release2) on BCM4389 r3 @ 29.985/160.501/1002.823MHz", ThreadX v5.6
+- three slices attach: wl0 (5 GHz), wl1 (2.4 GHz), wl2 (2.4 + 5 GHz), "Broadcom BCM4389 802.11 Wireless Controller"; pciemsgbuf0 driver up
+- "Firmware boot took 518797 us"; no trap, no assert. CA7 back in reset afterwards, no panic, UI up, phone back in fastboot.
+- the whole log as printed (SWEET WLAN: FW lines):
+    WL_REG_ON - LHL Auto Clock Control = 0x8000000 BT_REG_ON:0
+    000000.000 gic_dist_init max_irq 64
+    000000.001 
+    RTE (PCIE-MSGBUF) 20.25.485.19 (wlan=r945875 c1 release2) on BCM4389 r3 @ 29.985/160.501/1002.823MHz
+    000000.002 EL: e6 8b30
+    000000.009 pciemsgbuf0: Broadcom PCIE MSGBUF driver
+    000000.014 EL: e6 8b30
+    000000.015 wl0: wlc_attach: Overriding device id: 0x4441 instead of 0x4441
+    000000.016 Slice0: phy_radio_attach: RF Band Cap: 2G:0 5G:1
+    000000.208 desc using bootmem unit=0 fifo=1 type=2
+    000000.208 desc using bootmem unit=0 fifo=7 type=2
+    000000.219 MALLOC warning: allocations are persistent by default in attach phase!
+    000000.226 wl0: Broadcom BCM4389 802.11 Wireless Controller 20.25.485.19 (wlan=r945875 c1 release2)
+    000000.226 EL: e6 8b30
+    000000.227 wl1: wlc_attach: Overriding device id: 0x4441 instead of 0x4441
+    000000.228 Slice1: phy_radio_attach: RF Band Cap: 2G:1 5G:0
+    000000.389 wl1: Broadcom BCM4389 802.11 Wireless Controller 20.25.485.19 (wlan=r945875 c1 release2)
+    000000.389 EL: e6 8b30
+    000000.391 Slice2: phy_radio_attach: RF Band Cap: 2G:1 5G:1
+    000000.442 wl2: Broadcom BCM4389 802.11 Wireless Controller 20.25.485.19 (wlan=r945875 c1 release2)
+    000000.445 TCAM: 1920 used: 781 exceed:0
+    000000.445 Reclaim section 1: returned 289812 bytes (pre-reclaim: 628000)
+    000000.451 SPLITRX_MODE: 4 tcmsegsize 0 d11rxoffset 0
+    000000.451 Firmware boot took 518797 us
+    000000.451 ThreadX v5.6 initialized
+- Next: the host side of the msgbuf protocol (rings at ring_info, mailboxes, the H2D/D2H doorbells): XNU driver work, design first.
