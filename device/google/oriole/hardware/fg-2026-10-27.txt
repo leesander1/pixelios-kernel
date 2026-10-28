@@ -91,3 +91,15 @@ Reading [obs unless tagged]:
 - open: external/charging come from the current only (charging = AvgCurrent > 20 mA; on USB at 91 % with ~0 mA it shows external=0); the
   MAX77759 charger (another I2C address on the same bus) would give the real plug state. The 2x current/capacity scale question stays open.
 - tools/build-xnu-image.sh now adds sweetbattery=2 to every oriole image (an explicit sweetbattery= in --args wins).
+
+# Charger, run fg4-oriole1 (kernel xnu-fba326b = 0145-0159, sweetfg=2, sweetbattery=2 by default): plug state real
+    SWEET FG: F2: reading the charger at I2C 0x69
+    SWEET FG: charger [0xb4] = 0xcd     CHG_INT_OK: CHGIN_OK (bit 6) = 1, WCIN_OK (bit 5) = 0
+    SWEET FG: charger [0xb5] = 0x60     CHG_DETAILS_00: CHGIN_DTLS (bits 6:5) = 3
+    SWEET FG: charger [0xb6] = 0xb4     CHG_DETAILS_01: CHG_DTLS (bits 3:0) = 4 = DONE, BAT_DTLS (bits 6:4) = 3
+    SWEET FG: charger [0xb7] = 0x20     CHG_DETAILS_02: CHGIN_STS (bit 5) = 1, WCIN_STS = 0
+    SWEET BATTERY: MAX77759 fuel gauge, 91% 4321mV 0mA external=1 charging=0
+- USB plugged and the CHGIN switch closed, charging finished (DONE at 91 % SOC / 4321 mV: the charger's own termination, the phone has been
+  on USB all day [guess on why DONE below 100 %]); iOS gets external=1, charging=0, full=1. No panic; ABL's I2C setup back after each session.
+- open: unplugged and actively-charging states not yet observed (needs the phone off USB, which the USB log transport cannot do) and the
+  2x current/capacity scale.
