@@ -327,6 +327,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', no_ufs=False, wla
                 [(p, u32(n(b[k]))) for p, k in bits] + top)
     touch = touch_node() if 'touch_chip_id' in config and not qemu else None
 
+
     # bsd/dev/sweet_wlan.c (patches 0124, 0129): the BCM4389 behind the PCIe1 link the shim left up (--wlan-hold). All addresses come from soc.json
     # wlan (sources cited there): reg = BAR0 ATU window (mem, 64 KiB), cfg = endpoint config space, atu = DBI ATU block, elbi = PCIe1 ELBI (link state), pmu-iso = PHY isolation word.
     # Only boards whose soc.json has a wlan block with mem/cfg get the node; the driver additionally refuses addresses other than the pinned ones.
@@ -348,6 +349,32 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', no_ufs=False, wla
         if all(k in w for k in ('tcm', 'tcm_bytes', 'atu_r2_off')) else [])
     ) if w and all(k in w for k in ('mem', 'cfg', 'atu', 'elbi', 'pmu_pcie1_iso')) and not qemu else None
 
+    # bsd/dev/sweet_fg_gs101.c (patch 0156, docs/research/47 F1): the MAX77759 fuel gauge's I2C bus, read only. Only boards whose board.json names
+    # fg_usi get the node; the controller, USI mode register and the CMU_PERIC1 offsets of that USI come from soc.json (sources cited there).
+    def fg_node():
+        usi = config['fg_usi']
+        n = lambda v: int(v, 0) if isinstance(v, str) else v
+        pin = lambda key: u64(n(config[config[key][0] + '_bank']), config[key][1])
+        c, u = config['cmu_peric1'], config['cmu_peric1_usi%d' % usi]
+        o = c['offsets']
+        return node('sweet-fg', [
+            ph(),
+            ('compatible', cstr('google,gs101-max77759-fg')),
+            ('reg', u64(n(config['usi%d_i2c_base' % usi]), n(config['usi%d_i2c_size' % usi]))),
+            ('usi-regs-offset', u32(n(config['usi_regs_offset']))),
+            ('usi-mode-reg', u64(n(config['usi%d_mode_reg' % usi]))),
+            ('usi-mode-i2c', u32(n(config['usi_mode_i2c']))),
+            ('usi-mode-mask', u32(n(config['usi_mode_mask']))),
+            ('i2c-addr', u32(n(config['fg_i2c_addr']))),
+            ('pin-scl', pin('fg_pin_scl')),
+            ('pin-sda', pin('fg_pin_sda')),
+            ('cmu-reg', u64(n(c['base']), n(c['size']))),
+            # option, bus mux, USI mux, USI mux auto, divider, ipclk gate, pclk gate, rstnsync gate, QCH, gate bit
+            ('cmu-usi', u32(n(o['option']), n(o['mux_bus']), n(u['mux']), n(u['mux_auto']), n(u['div']), n(u['gate_ipclk']),
+                            n(u['gate_pclk']), n(u['gate_rstn']), n(u['qch']), n(c['bits']['gate_val']))),
+        ])
+    fg = fg_node() if 'fg_usi' in config and not qemu else None
+
     # Identity of the iPhone X whose userland runs here: compatible[0] is
     # hw.model/hw.target (D22AP), model is hw.machine/hw.product
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
@@ -364,7 +391,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', no_ufs=False, wla
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if (qemu or no_ufs) else [ufs]) + ([usb] if usb else []) + ([reset] if reset else []) + ([keys] if keys else []) + ([touch] if touch else []) + ([wlan] if wlan else []))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if (qemu or no_ufs) else [ufs]) + ([usb] if usb else []) + ([reset] if reset else []) + ([keys] if keys else []) + ([touch] if touch else []) + ([wlan] if wlan else []) + ([fg] if fg else []))
 
 
 if __name__ == '__main__':

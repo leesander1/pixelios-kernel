@@ -26,6 +26,8 @@ class Boards(unittest.TestCase):
     def test_oriole_differs_from_bluejay_only_in_identity(self):
         a, b = tree('bluejay'), tree('oriole')
         diff = {k for k in set(a) | set(b) if a.get(k) != b.get(k)}
+        # xnu patch 0156: only oriole has the fuel-gauge node (the bluejay wiring is not checked); it is built last, so only the root phandle moves
+        diff -= {k for k in diff if k.startswith('/device-tree/sweet-fg:')} | {'/device-tree:AAPL,phandle'}
         allowed = {'/device-tree:model-number', '/device-tree/product:product-description',
                    '/device-tree/sweet-wlan:board'}   # xnu patch 0148: the board picks the pinned Wi-Fi firmware identity
         self.assertTrue(diff <= allowed, sorted(diff - allowed))

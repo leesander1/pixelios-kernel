@@ -150,6 +150,19 @@
       "bits": "read from source: docs/research/19 sections 2-3 (GK cmucal-sfr.c:7919-7921,11626-11629; Linux clk-exynos-arm64.c:24-25). Gate: MANUAL bit 20, CG_VAL bit 21, ENABLE_AUTOMATIC_CLKGATING bit 28. Not read back on hardware; whether the forced sequence opens the SCK is a guess."
     }
   },
+  "usi12_i2c_base": "0x10D50000",
+  "usi12_i2c_size": "0x1000",
+  "usi12_mode_reg": "0x10C21010",
+  "usi_mode_i2c": "0x4",
+  "cmu_peric1_usi12": {
+    "mux": "0x650",
+    "mux_auto": "0x654",
+    "div": "0x1810",
+    "gate_ipclk": "0x2030",
+    "gate_pclk": "0x2050",
+    "gate_rstn": "0x206C",
+    "qch": "0x3030"
+  },
   "acpm": {
     "mbox_base": "0x17610000",
     "sram_base": "0x02039000",
@@ -203,6 +216,7 @@
     "psci": "conduit SMC; SYSTEM_RESET 0x84000009",
     "watchdogs": "two cluster watchdogs armed by ABL; the shim disables them",
     "framebuffer": "pixel format a8r8g8b8",
+    "fuel_gauge": "Read from source 2026-10-27 (docs/research/47; xnu patch 0156 only reads them): HSI2C12 = USI12_USI_PERIC1 at 0x10D50000 size 0x1000, USI mode at sysreg_peric1 0x10C21000 + usi-offset 0x10 = 0x10C21010: Google kernel/gs android-gs-raviole-5.10-android13-qpr3 gs101-usi.dtsi:337-356; USI mode I2C = BIT(2): Linux v6.12 drivers/soc/samsung/exynos-usi.c:23; CMU_PERIC1 USI12 chain: Linux v6.12 drivers/clk/samsung/clk-gs101.c:4047-4048 (PLL_CON0/1_MUX_CLKCMU_PERIC1_USI12_USI_USER 0x650/0x654), :4059 (DIV 0x1810), :4074 (PERIC1_TOP0 IPCLK_5 0x2030, feeds dout_peric1_usi12_usi :4291-4294), :4082 (PCLK_5 0x2050), :4089 (RSTNSYNC USI12 0x206C), :4105 (QCH USI12 0x3030); gate CG_VAL bit 21 as cmu_peric1.bits. Not yet observed.",
     "touch": "SPI11 / USI11_USI_PERIC1 engine, its USI mode register and the three pad banks the Pixel 6a touchscreen uses (feeds the /sweet-touch ADT node, tools/mkadt.py, xnu patch 0088). read from source: engine 0x10D40000 and sysreg_peric1 0x10C21000 + usi-offset 0x0c = 0x10C2100C: Google gs101-usi.dtsi:603-621,66 (docs/research/05-fact-check.md section 1); USI mode SPI = BIT(1), mask = UART|SPI|I2C = 0x7: Linux drivers/soc/samsung/exynos-usi.c:19-25; USI_CON/USI_OPTION live at engine + 0xc0 (exynos-usi.c:28-34; the +0xc0 position is from the mainline usi1.. nodes, gs101.dtsi:378, and applied to USI11 by analogy = guess); pad banks: PERIC1 pinctrl 0x10C40000 (Linux gs101.dtsi:916-918) + gpp23 0x60, gpp26 0xc0 (pinctrl-exynos-arm64.c gs101_pin_peric1), ALIVE pinctrl 0x174D0000 (gs101.dtsi:1414-1416) + gpa9 0xc0 (gs101_pin_alive). Flags flipped 2026-10-22 after run acpm3 (observed on bluejay: descriptor fields at the derived offsets, q_len=5, q_elem_size=0x10 with 5x16 B slots, both queues empty 3/3); the rails themselves are still unread."
   }
 }

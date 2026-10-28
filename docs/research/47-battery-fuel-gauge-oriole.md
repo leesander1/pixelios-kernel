@@ -1,6 +1,6 @@
 # 47 - A real battery reading on the Pixel 6 (MAX77759 fuel gauge over HSI2C12)
 
-Status: DESIGN, 2026-10-27. Nothing built or run. Tags: **[src file:line]**, **[obs]**, **[guess]**.
+Status: DESIGN, 2026-10-27. F1 implemented as xnu patch 0156 (`sweetfg=1`, ADT /sweet-fg), not yet run. Tags: **[src file:line]**, **[obs]**, **[guess]**.
 Sources (outside git, `~/pixelios-artifacts/refs/`): `gs-dts` (kernel/gs @ android-gs-raviole-5.10-android13-qpr3, 6e771b23) and
 `gs-bms` = `kernel/google-modules/bms` @ the same branch (1cf4358a).
 
@@ -52,3 +52,11 @@ already knows it is enumerated) or the MAX77759 charger block (another I2C addre
 - U2: the HSI2C timing values for 400 kHz from the PERIC1 USI12 clock as XNU finds it.
 - U3: the sign of Current while charging, and whether RepSOC is valid without Android's model load (`max_m5` loads a model at boot in
   Android; the gauge keeps its own state across reboots, so it should already be learned) [guess].
+
+## 6. F1 as built (xnu 0156)
+
+F1 runs inside XNU, not the shim: the same place F3 will live, and the touch driver (xnu 0088/0089) already reads CMU_PERIC1 and the gpp23 bank
+there. `bsd/dev/sweet_fg_gs101.c`, boot-arg `sweetfg=1`, delay `sweetfgdelay` (default 60 s). It prints the CMU_PERIC1 USI12 words (mux 0x650/0x654,
+div 0x1810, gates ipclk_5 0x2030 / pclk_5 0x2050 / rstnsync 0x206C, QCH 0x3030: Linux clk-gs101.c:4047-4105), the sysreg USI12 mode (0x10C21010),
+the gpp23-4/5 pad state, and the HSI2C12 registers (i2c-exynos5.c:37-60) plus its USI CON/OPTION only when both gates read CG_VAL = 1. Nothing is
+written. The answers decide F2: if ABL leaves USI12 clocked and in I2C mode (U1), F2 is one controller setup and a read of DevName (0x21).

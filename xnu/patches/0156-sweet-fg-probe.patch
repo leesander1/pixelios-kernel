@@ -1,0 +1,307 @@
+SWEET FG F1 (patch 0156, docs/research/47 stage F1): a READ-ONLY look at HSI2C12, the I2C bus of the Pixel 6's MAX77759 fuel gauge. Boot-arg sweetfg=1 (default off), ADT /sweet-fg (tools/mkadt.py, boards with fg_usi in board.json: oriole). After sweetfgdelay seconds (default 60) it prints the CMU_PERIC1 USI12 clock words, the sysreg USI12 mode, the SCL/SDA pad state and, only if both USI12 gates (ipclk_5, pclk_5) read as on, the HSI2C12 registers and its USI block. No register write, no I2C transaction.
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -118,6 +118,7 @@ bsd/dev/sweet_keys_gs101.c		standard
+ bsd/dev/sweet_touch_gs101.c		standard
+ bsd/dev/sweet_gpu_gs101.c		standard
+ bsd/dev/sweet_wlan.c			standard
++bsd/dev/sweet_fg_gs101.c		standard
+ bsd/dev/sweet_gpu_job.c		standard
+ bsd/dev/sweet_mali.c		standard
+ bsd/dev/mem.c				standard
+diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_fg_gs101.c
+@@ -0,0 +1,271 @@
++/*
++ * Pixel 6 (gs101, "oriole") battery fuel gauge, stage F1 (docs/research/47): a READ-ONLY look at the bus the MAX77759
++ * gauge sits on (HSI2C12 = USI12 of PERIC1, gauge at I2C 0x36). Nothing is written: no register of the CMU, the sysreg,
++ * the pads or the I2C controller, and no I2C transaction. The I2C controller itself is read only when both of its CMU
++ * gates (ipclk_5, pclk_5) read as on, so an unclocked block is never touched (the touch run 7 lesson: a read of an
++ * unclocked PERIC1 engine hangs the bus).
++ *
++ * Silent no-op unless the ADT has /sweet-fg (tools/mkadt.py adds it only for boards whose board.json has fg_usi) and
++ * the boot-arg sweetfg=1 is given. Every address comes from that node (soc.json / board.json, sources cited there).
++ *
++ * Boot-args:
++ *   sweetfg=1            run F1 once (default 0 = off)
++ *   sweetfgdelay=S       seconds to wait before the first register access (default 60): a bus hang then happens after
++ *                        the GUI and the persistent log got there first
++ *
++ * Sources ("Linux" = mainline v6.12 adc218676eef, "DS-gs" = kernel/gs android-gs-raviole-5.10-android13-qpr3):
++ *  - HSI2C registers: Linux drivers/i2c/busses/i2c-exynos5.c:37-60 (CTL 0x00 .. ADDR 0x70).
++ *  - USI: Linux drivers/soc/samsung/exynos-usi.c:19-34 (SW_CONF I2C = BIT(2), USI_CON 0x04, USI_OPTION 0x08); the USI
++ *    block at engine + usi-regs-offset is the same guess the touch driver makes (sweet_touch_gs101.c header).
++ *  - CMU_PERIC1 USI12 chain: Linux drivers/clk/samsung/clk-gs101.c:4047-4048 (mux 0x650/0x654), :4059 (div 0x1810),
++ *    :4074 (ipclk_5 0x2030), :4082 (pclk_5 0x2050), :4089 (rstnsync 0x206c), :4105 (QCH 0x3030), :4291-4294 (ipclk_5
++ *    feeds dout_peric1_usi12_usi); gate bit 21 = CG_VAL as for USI11 (docs/research/19).
++ *  - Board wiring: DS-gs gs101-usi.dtsi:337-356 (hsi2c_12 @ 0x10D50000, usi-offset 0x10 in sysreg_peric1, gpp23-4 SCL,
++ *    gpp23-5 SDA), gs101-raviole-battery.dtsi:123-128, 155-166 (max77759 fuel gauge at 0x36 on hsi2c_12).
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <libkern/libkern.h>
++#include <stdint.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++extern kern_return_t thread_terminate(thread_t);
++void sweet_fg_gs101_init(void);
++
++#define FG_COMPAT        "google,gs101-max77759-fg"
++#define FG_PAGE          0x4000u          /* kernel page: ml_io_map maps whole pages */
++
++/* Samsung pad controller (pinctrl-exynos-arm64.c exynos850_bank_type_off: CON 4 bits/pin, DAT 1 bit/pin, PUD 4 bits/pin) */
++#define PIN_CON          0x00u
++#define PIN_DAT          0x04u
++#define PIN_PUD          0x08u
++
++/* USI (exynos-usi.c) */
++#define USI_CON          0x04u
++#define USI_OPTION       0x08u
++
++/* the HSI2C registers dumped by F1, in register order (i2c-exynos5.c:37-60) */
++static const struct { uint32_t off; const char *name; } fg_i2c_regs[] = {
++	{ 0x00, "CTL" }, { 0x04, "FIFO_CTL" }, { 0x08, "TRAILING_CTL" }, { 0x0C, "CLK_CTL" }, { 0x10, "CLK_SLOT" },
++	{ 0x20, "INT_ENABLE" }, { 0x24, "INT_STATUS" }, { 0x2C, "ERR_STATUS" }, { 0x30, "FIFO_STATUS" },
++	{ 0x40, "CONF" }, { 0x44, "AUTO_CONF" }, { 0x48, "TIMEOUT" }, { 0x4C, "MANUAL_CMD" }, { 0x50, "TRANS_STATUS" },
++	{ 0x54, "TIMING_HS1" }, { 0x58, "TIMING_HS2" }, { 0x5C, "TIMING_HS3" }, { 0x60, "TIMING_FS1" },
++	{ 0x64, "TIMING_FS2" }, { 0x68, "TIMING_FS3" }, { 0x6C, "TIMING_SLA" }, { 0x70, "ADDR" },
++};
++
++static struct {
++	uint64_t i2c_pa, i2c_size, mode_pa, cmu_pa, cmu_size, scl_bank, sda_bank;
++	uint32_t usi_off, mode_i2c, mode_mask, addr, scl_pin, sda_pin;
++	uint32_t c_option, c_mux_bus, c_mux, c_mux_auto, c_div, c_ipclk, c_pclk, c_rstn, c_qch, gate_bit;
++	uint32_t delay_s;
++	int sleep_chan;
++} fg;
++
++static uint32_t
++fg_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++fg_sleep_ms(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&fg.sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++/* Map the page(s) around [pa, pa+len) and return the virtual address of pa. */
++static vm_offset_t
++fg_map(uint64_t pa, uint64_t len)
++{
++	uint64_t base = pa & ~(uint64_t)(FG_PAGE - 1u);
++	uint64_t end = (pa + len + FG_PAGE - 1u) & ~(uint64_t)(FG_PAGE - 1u);
++	vm_offset_t va = ml_io_map((vm_offset_t)base, (vm_size_t)(end - base));
++	return va ? va + (vm_offset_t)(pa - base) : 0;
++}
++
++static bool
++fg_dt_u32(DTEntry node, const char *name, uint32_t *out, unsigned count)
++{
++	uint32_t const *p = NULL;
++	unsigned int size = 0;
++	if (SecureDTGetProperty(node, name, (void const **)&p, &size) != kSuccess || size < count * 4u) {
++		printf("SWEET FG: /sweet-fg has no usable \"%s\"\n", name);
++		return false;
++	}
++	for (unsigned i = 0; i < count; i++) {
++		out[i] = p[i];
++	}
++	return true;
++}
++
++static bool
++fg_dt_u64(DTEntry node, const char *name, uint64_t *out, unsigned count)
++{
++	uint64_t const *p = NULL;
++	unsigned int size = 0;
++	if (SecureDTGetProperty(node, name, (void const **)&p, &size) != kSuccess || size < count * 8u) {
++		printf("SWEET FG: /sweet-fg has no usable \"%s\"\n", name);
++		return false;
++	}
++	for (unsigned i = 0; i < count; i++) {
++		out[i] = p[i];
++	}
++	return true;
++}
++
++static bool
++fg_parse(DTEntry node)
++{
++	uint64_t reg[2], mode[1], cmu[2], scl[2], sda[2];
++	uint32_t c[10];
++
++	if (!fg_dt_u64(node, "reg", reg, 2) || !fg_dt_u32(node, "usi-regs-offset", &fg.usi_off, 1) ||
++	    !fg_dt_u64(node, "usi-mode-reg", mode, 1) || !fg_dt_u32(node, "usi-mode-i2c", &fg.mode_i2c, 1) ||
++	    !fg_dt_u32(node, "usi-mode-mask", &fg.mode_mask, 1) || !fg_dt_u32(node, "i2c-addr", &fg.addr, 1) ||
++	    !fg_dt_u64(node, "pin-scl", scl, 2) || !fg_dt_u64(node, "pin-sda", sda, 2) ||
++	    !fg_dt_u64(node, "cmu-reg", cmu, 2) || !fg_dt_u32(node, "cmu-usi", c, 10)) {
++		return false;
++	}
++	fg.i2c_pa = reg[0];
++	fg.i2c_size = reg[1];
++	fg.mode_pa = mode[0];
++	fg.cmu_pa = cmu[0];
++	fg.cmu_size = cmu[1];
++	fg.scl_bank = scl[0];
++	fg.scl_pin = (uint32_t)scl[1];
++	fg.sda_bank = sda[0];
++	fg.sda_pin = (uint32_t)sda[1];
++	fg.c_option = c[0]; fg.c_mux_bus = c[1]; fg.c_mux = c[2]; fg.c_mux_auto = c[3]; fg.c_div = c[4];
++	fg.c_ipclk = c[5]; fg.c_pclk = c[6]; fg.c_rstn = c[7]; fg.c_qch = c[8]; fg.gate_bit = c[9];
++	/* every CMU offset inside the CMU window, the controller big enough for the dump and the USI block, pins 0..7 */
++	for (unsigned i = 0; i < 9; i++) {
++		if (c[i] + 4u > fg.cmu_size || (c[i] & 3u) != 0) {
++			return false;
++		}
++	}
++	return fg.i2c_size >= 0x100 && fg.usi_off + USI_OPTION + 4u <= fg.i2c_size && fg.scl_pin < 8 && fg.sda_pin < 8 &&
++	       fg.gate_bit < 32 && fg.addr < 0x80;
++}
++
++static void
++fg_pin_report(const char *name, uint64_t bank_pa, uint32_t pin)
++{
++	vm_offset_t b = fg_map(bank_pa, 0x20);
++
++	if (!b) {
++		printf("SWEET FG: pin %s bank %#llx not mapped\n", name, bank_pa);
++		return;
++	}
++	printf("SWEET FG: pin %-3s bank %#llx[%u] func=%u dat=%u pud=%#x\n", name, bank_pa, pin,
++	    (fg_rd(b, PIN_CON) >> (4u * pin)) & 0xfu, (fg_rd(b, PIN_DAT) >> pin) & 1u, (fg_rd(b, PIN_PUD) >> (4u * pin)) & 0xfu);
++}
++
++/* F1: CMU words, USI mode, pads; the controller only behind its two gates */
++static void
++fg_run(void)
++{
++	vm_offset_t cmu, mode, i2c;
++	uint32_t ipclk, pclk, m, gb;
++
++	printf("SWEET FG: F1 (read-only) in %u s: HSI2C %#llx, gauge at I2C %#x\n", fg.delay_s, fg.i2c_pa, fg.addr);
++	fg_sleep_ms(fg.delay_s * 1000u);
++	cmu = fg_map(fg.cmu_pa, fg.cmu_size);
++	mode = fg_map(fg.mode_pa, 4);
++	if (!cmu || !mode) {
++		printf("SWEET FG: CMU or USI mode register not mapped, stop\n");
++		return;
++	}
++	gb = 1u << fg.gate_bit;
++	ipclk = fg_rd(cmu, fg.c_ipclk);
++	pclk = fg_rd(cmu, fg.c_pclk);
++	printf("SWEET FG: cmu %#llx: OPTION[%#x]=%#x bus_mux[%#x]=%#x usi_mux[%#x]=%#x usi_auto[%#x]=%#x div[%#x]=%#x\n", fg.cmu_pa,
++	    fg.c_option, fg_rd(cmu, fg.c_option), fg.c_mux_bus, fg_rd(cmu, fg.c_mux_bus), fg.c_mux, fg_rd(cmu, fg.c_mux),
++	    fg.c_mux_auto, fg_rd(cmu, fg.c_mux_auto), fg.c_div, fg_rd(cmu, fg.c_div));
++	printf("SWEET FG: cmu gates: ipclk_5[%#x]=%#x pclk_5[%#x]=%#x rstnsync[%#x]=%#x QCH[%#x]=%#x\n", fg.c_ipclk, ipclk, fg.c_pclk, pclk,
++	    fg.c_rstn, fg_rd(cmu, fg.c_rstn), fg.c_qch, fg_rd(cmu, fg.c_qch));
++	m = fg_rd(mode, 0);
++	printf("SWEET FG: sysreg USI12 mode (%#llx) = %#x (I2C = %#x, so %s)\n", fg.mode_pa, m, fg.mode_i2c,
++	    (m & fg.mode_mask) == fg.mode_i2c ? "I2C" : "not I2C");
++	fg_pin_report("scl", fg.scl_bank, fg.scl_pin);
++	fg_pin_report("sda", fg.sda_bank, fg.sda_pin);
++	if (!(ipclk & gb) || !(pclk & gb)) {
++		printf("SWEET FG: HSI2C12 not read: a gate is off (ipclk_5 %s, pclk_5 %s); F1 done\n", (ipclk & gb) ? "on" : "off",
++		    (pclk & gb) ? "on" : "off");
++		return;
++	}
++	i2c = fg_map(fg.i2c_pa, fg.i2c_size);
++	if (!i2c) {
++		printf("SWEET FG: HSI2C12 not mapped, stop\n");
++		return;
++	}
++	for (unsigned i = 0; i < sizeof fg_i2c_regs / sizeof fg_i2c_regs[0]; i++) {
++		printf("SWEET FG: hsi2c %-12s [%#04x] = %#010x\n", fg_i2c_regs[i].name, fg_i2c_regs[i].off, fg_rd(i2c, fg_i2c_regs[i].off));
++	}
++	printf("SWEET FG: usi CON[%#x] = %#x OPTION[%#x] = %#x\n", fg.usi_off + USI_CON, fg_rd(i2c, fg.usi_off + USI_CON),
++	    fg.usi_off + USI_OPTION, fg_rd(i2c, fg.usi_off + USI_OPTION));
++	printf("SWEET FG: F1 done\n");
++}
++
++static void
++fg_thread(void *arg, wait_result_t result)
++{
++	(void)arg;
++	(void)result;
++	fg_run();
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++void
++sweet_fg_gs101_init(void)
++{
++	static int started;
++	DTEntry node;
++	char const *compat = NULL;
++	unsigned int csize = 0;
++	int mode = 0, delay_s = 60;
++	thread_t thread;
++
++	if (started) {
++		return;
++	}
++	started = 1;
++	if (SecureDTLookupEntry(NULL, "/sweet-fg", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "compatible", (void const **)&compat, &csize) != kSuccess ||
++	    compat == NULL || csize < sizeof(FG_COMPAT) || strncmp(compat, FG_COMPAT, sizeof(FG_COMPAT)) != 0) {
++		return;    /* not this board: stay silent */
++	}
++	(void)PE_parse_boot_argn("sweetfg", &mode, sizeof(mode));
++	if (mode != 1) {
++		return;
++	}
++	(void)PE_parse_boot_argn("sweetfgdelay", &delay_s, sizeof(delay_s));
++	if (delay_s < 0 || delay_s > 3600) {
++		delay_s = 60;
++	}
++	if (!fg_parse(node)) {
++		printf("SWEET FG: /sweet-fg is incomplete, not started\n");
++		return;
++	}
++	fg.delay_s = (uint32_t)delay_s;
++	if (kernel_thread_start(fg_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -57,6 +57,7 @@ extern void sweet_keys_gs101_start(void);   /* bsd/dev/sweet_keys_gs101.c, no-op
+ extern void sweet_touch_gs101_init(void);
+ extern void sweet_gpu_gs101_init(void);     /* bsd/dev/sweet_gpu_gs101.c, read-only, needs boot-arg sweetgpu= */
+ extern void sweet_wlan_init(void);          /* bsd/dev/sweet_wlan.c, read-only stage 1, needs boot-arg sweetwlan= and ADT /sweet-wlan */
++extern void sweet_fg_gs101_init(void);      /* bsd/dev/sweet_fg_gs101.c, read-only F1, needs boot-arg sweetfg=1 and ADT /sweet-fg */
+ 
+ #define REG_CAP         0x00
+ #define REG_IS          0x20
+@@ -705,6 +706,7 @@ sweet_ufs_init(void)
+ 	sweet_touch_gs101_init();     /* no-op without the ADT node /sweet-touch (bluejay only) */
+ 	sweet_gpu_gs101_init();       /* no-op without boot-arg sweetgpu= */
+ 	sweet_wlan_init();            /* no-op without boot-arg sweetwlan= */
++	sweet_fg_gs101_init();        /* no-op without boot-arg sweetfg=1 and the ADT node /sweet-fg */
+ 	return 0;
+ }
