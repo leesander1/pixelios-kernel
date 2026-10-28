@@ -82,3 +82,12 @@ Reading [obs unless tagged]:
   (the ratio 1889/2077 = 90.9 % agrees with RepSOC). Either the effective rsense is 2.5 mOhm or the LSB formula differs: the current values
   are then also 2x what F2 printed. The percentage (RepSOC) does not depend on it.
 - Next: F3 = SweetBattery (xnu 0061) takes RepSOC / VCell / AvgCurrent / Temp from this gauge on boards with /sweet-fg.
+
+# F3, run fg3-oriole1 (kernel xnu-d0012d0 = 0145-0158, sweetbattery=2): iOS gets the real battery
+    SWEET BATTERY: static fallback, 100% 4200mV 0mA external=1 charging=0        (at SweetBattery start: the gauge driver was not up yet)
+    SWEET BATTERY: MAX77759 fuel gauge, 91% 4322mV 0mA external=0 charging=0     (first 30 s poll and after)
+- the IOPMPowerSource now carries the gauge's 91 %, 4322 mV, measured temperature, design 4520 mAh; no panic, UI up.
+- not seen: the status bar itself (no screen frame in this run).
+- open: external/charging come from the current only (charging = AvgCurrent > 20 mA; on USB at 91 % with ~0 mA it shows external=0); the
+  MAX77759 charger (another I2C address on the same bus) would give the real plug state. The 2x current/capacity scale question stays open.
+- tools/build-xnu-image.sh now adds sweetbattery=2 to every oriole image (an explicit sweetbattery= in --args wins).

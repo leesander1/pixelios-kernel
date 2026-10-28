@@ -41,6 +41,7 @@ case "$qr" in off|0) ;; *[!0-9]*) echo "--qr needs seconds or off" >&2; exit 2 ;
 [ -n "$restart" ] && args="$args sweetrestart=$restart"
 [ "$handover" = 0 ] || args="$args sweetgpu=0x1C500000"   # patch 0102 reads the GPU; sweetgpujob=1 (patch 0103, WRITES) only via --args
 [ "$wlan" = 0 ] || args="$args sweetwlan=$wlanlvl"   # patch 0124: read-only attach, needs the --wlan-hold shim flavor (link left up)
+[ "$board" = oriole ] && case " $extra " in *" sweetbattery="*) ;; *) args="$args sweetbattery=2" ;; esac   # patch 0158: the real fuel gauge (run fg3-oriole1); an explicit sweetbattery= in --args wins
 [ -n "$extra" ] && args="$args $extra"
 [ -z "$overlay" ] || case " $args " in *" ufsroot="*) echo "--overlay: ufsroot= in --args is refused (the overlay writes userdata only, AGENTS.md rule 1)" >&2; exit 2 ;; esac   # review 0117 F1
 [ -z "$overlay" ] || case " $args " in *" sweetdev="*) ;; *) args="$args sweetdev=1" ;; esac   # never doubled: an explicit sweetdev= in --args is kept

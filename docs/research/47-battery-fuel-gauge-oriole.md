@@ -1,6 +1,6 @@
 # 47 - A real battery reading on the Pixel 6 (MAX77759 fuel gauge over HSI2C12)
 
-Status: DESIGN, 2026-10-27. F1 implemented as xnu patch 0156 (`sweetfg=1`, ADT /sweet-fg), not yet run. Tags: **[src file:line]**, **[obs]**, **[guess]**.
+Status: F1-F3 done on oriole 2026-10-27 (xnu 0156-0158; runs fg1/fg2/fg3, device/google/oriole/hardware/fg-2026-10-27.txt). Tags: **[src file:line]**, **[obs]**, **[guess]**.
 Sources (outside git, `~/pixelios-artifacts/refs/`): `gs-dts` (kernel/gs @ android-gs-raviole-5.10-android13-qpr3, 6e771b23) and
 `gs-bms` = `kernel/google-modules/bms` @ the same branch (1cf4358a).
 
