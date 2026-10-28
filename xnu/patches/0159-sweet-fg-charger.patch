@@ -1,0 +1,241 @@
+SWEET FG charger (patch 0159): plug and charge state from the MAX77759 charger (I2C 0x69 on HSI2C12, ADT /sweet-fg chg-i2c-addr). sweet_fg_charger() reads CHG_INT_OK and CHG_DETAILS_00/01/02 (0xB4-0xB7, 8 bit) through the same checked, save-and-restore transfer code as the gauge, read only; sweetfg=2 prints them. SweetBattery (sweetbattery=2) sets external = an input valid (CHGIN_OK/WCIN_OK) and its switch closed (CHGIN_STS/WCIN_STS), charging = external and CHG_DTLS 0-3, full = external and CHG_DTLS 4 or 100 %, as Google's max77759_charger.c does (:1907-1920, :1980-2006); without a charger answer it keeps the current-based guess of 0158 and publishes SweetBatteryChargerKnown false. The battery log line repeats when plug or charge state changes.
+
+diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
+--- a/bsd/dev/sweet_fg_gs101.c
++++ b/bsd/dev/sweet_fg_gs101.c
+@@ -13,6 +13,10 @@
+  * F3 (patch 0158): sweet_fg_sample() = the same checks and transfers, quiet, for SweetBattery (iokit/Kernel/arm/SweetBattery.cpp,
+  *    boot-arg sweetbattery=2), every 30 s: RepSOC, VCell, AvgCurrent, Temp. A sample is skipped (returns nonzero) when the bus is
+  *    not as ABL leaves it or another F2/F3 user holds it.
++ * Charger (patch 0159): sweet_fg_charger() reads the MAX77759 charger's four status registers CHG_INT_OK .. CHG_DETAILS_02
++ *    (0xB4-0xB7, 8 bit, I2C address from the ADT chg-i2c-addr, gs101-raviole-battery.dtsi:181-184 = 0x69) the same way, read only;
++ *    F2 prints them too. max77759_A1_regs.h:1379-1385 (INT_OK: CHGIN_OK bit 6, WCIN_OK bit 5), :1454-1545 (DETAILS_00/01/02 fields),
++ *    max77759_charger.c:44-56 (CHG_DTLS values).
+  *
+  * Silent no-op unless the ADT has /sweet-fg (tools/mkadt.py adds it only for boards whose board.json has fg_usi) and
+  * the boot-arg sweetfg=1 is given. Every address comes from that node (soc.json / board.json, sources cited there).
+@@ -60,6 +64,7 @@
+ extern kern_return_t thread_terminate(thread_t);
+ void sweet_fg_gs101_init(void);
+ int sweet_fg_sample(unsigned *soc256, unsigned *mv, int *ma, int *centi_c);
++int sweet_fg_charger(uint8_t st[4]);
+ 
+ #define FG_COMPAT        "google,gs101-max77759-fg"
+ #define FG_PAGE          0x4000u          /* kernel page: ml_io_map maps whole pages */
+@@ -130,7 +135,7 @@
+ static struct {
+ 	int mode;
+ 	uint64_t i2c_pa, i2c_size, mode_pa, cmu_pa, cmu_size, scl_bank, sda_bank;
+-	uint32_t usi_off, mode_i2c, mode_mask, addr, scl_pin, sda_pin;
++	uint32_t usi_off, mode_i2c, mode_mask, addr, chg_addr, scl_pin, sda_pin;
+ 	uint32_t c_option, c_mux_bus, c_mux, c_mux_auto, c_div, c_ipclk, c_pclk, c_rstn, c_qch, gate_bit;
+ 	uint32_t delay_s;
+ 	int sleep_chan;
+@@ -226,6 +231,11 @@
+ 	}
+ 	fg.i2c_pa = reg[0];
+ 	fg.i2c_size = reg[1];
++	{	/* optional (patch 0159): the charger's address; absent = no charger reads */
++		uint32_t const *pc = NULL;
++		unsigned int sz = 0;
++		fg.chg_addr = SecureDTGetProperty(node, "chg-i2c-addr", (void const **)&pc, &sz) == kSuccess && sz >= 4 && *pc < 0x80 ? *pc : 0;
++	}
+ 	fg.mode_pa = mode[0];
+ 	fg.cmu_pa = cmu[0];
+ 	fg.cmu_size = cmu[1];
+@@ -271,7 +281,7 @@
+ 
+ /* one auto-mode message (i2c-exynos5.c exynos5_i2c_message_start), polled; rd = NULL: write the n bytes of tx, else read n bytes. 0 = ok */
+ static int
+-fg_msg(vm_offset_t i2c, int is_read, const uint8_t *tx, uint8_t *rd, unsigned n, int stop, const char **why)
++fg_msg(vm_offset_t i2c, uint32_t addr, int is_read, const uint8_t *tx, uint8_t *rd, unsigned n, int stop, const char **why)
+ {
+ 	uint32_t ctl, st, ts, fs;
+ 	uint64_t t0;
+@@ -279,7 +289,7 @@
+ 
+ 	fg_wr(i2c, I2C_INT_STATUS, fg_rd(i2c, I2C_INT_STATUS));            /* clear what is pending (write one to clear, exynos5_i2c_irq :488) */
+ 	ctl = fg_rd(i2c, I2C_CTL) & ~(CTL_TXCHON | CTL_RXCHON);
+-	fg_wr(i2c, I2C_ADDR, SLV_ADDR_MAS(fg.addr));
++	fg_wr(i2c, I2C_ADDR, SLV_ADDR_MAS(addr));
+ 	fg_wr(i2c, I2C_FIFO_CTL, FIFO_RX_EN | FIFO_TX_EN | (is_read ? FIFO_RX_TRIG(n) : FIFO_TX_TRIG(n)));
+ 	fg_wr(i2c, I2C_CTL, ctl | (is_read ? CTL_RXCHON : CTL_TXCHON));
+ 	fg_wr(i2c, I2C_INT_ENABLE, INT_TRANS_DONE | INT_TRANS_ABORT | INT_NO_DEV_ACK | INT_NO_DEV | INT_TIMEOUT |
+@@ -330,15 +340,16 @@
+ 	return 0;
+ }
+ 
+-/* a 16-bit little-endian gauge register: pointer write (no stop), 2-byte read (stop) */
++/* a register of the device at addr: pointer write (no stop), then width bytes read (stop); 16-bit ones little endian (the gauge),
++ * 8-bit ones the charger */
+ static int
+-fg_reg(vm_offset_t i2c, uint8_t reg, uint16_t *v, const char **why)
++fg_reg(vm_offset_t i2c, uint32_t addr, unsigned width, uint8_t reg, uint16_t *v, const char **why)
+ {
+ 	uint8_t b[2] = { 0, 0 };
+-	int rc = fg_msg(i2c, 0, &reg, NULL, 1, 0, why);
++	int rc = fg_msg(i2c, addr, 0, &reg, NULL, 1, 0, why);
+ 
+-	rc = rc ? rc : fg_msg(i2c, 1, NULL, b, 2, 1, why);
+-	*v = (uint16_t)(b[0] | b[1] << 8);
++	rc = rc ? rc : fg_msg(i2c, addr, 1, NULL, b, width, 1, why);
++	*v = width == 2 ? (uint16_t)(b[0] | b[1] << 8) : b[0];
+ 	return rc;
+ }
+ 
+@@ -377,7 +388,7 @@
+ /* one F2/F3 session: controller idle check, ABL's setup saved, the n registers read (printed when verbose), soft reset after a
+  * failure, ABL's setup written back. 0 = all read; the caller holds fg.busy */
+ static int
+-fg_session(vm_offset_t i2c, const uint8_t *regs, uint16_t *vals, unsigned n, int verbose)
++fg_session(vm_offset_t i2c, uint32_t addr, unsigned width, const uint8_t *regs, uint16_t *vals, unsigned n, int verbose)
+ {
+ 	uint32_t ctl, fs, ts;
+ 	const char *why = "";
+@@ -394,12 +405,14 @@
+ 		fg_saved[i] = fg_rd(i2c, fg_saved_offs[i]);
+ 	}
+ 	for (i = 0; i < n; i++) {
+-		rc = fg_reg(i2c, regs[i], &vals[i], &why);
++		rc = fg_reg(i2c, addr, width, regs[i], &vals[i], &why);
+ 		if (rc) {
+-			printf("SWEET FG: gauge register %#04x failed: %s\n", regs[i], why);
++			printf("SWEET FG: register %#04x of I2C %#x failed: %s\n", regs[i], addr, why);
+ 			break;
+ 		}
+-		if (verbose) {
++		if (verbose == 2) {
++			printf("SWEET FG: charger [%#04x] = %#04x\n", regs[i], vals[i]);
++		} else if (verbose) {
+ 			printf("SWEET FG: gauge %-10s [%#04x] = %#06x\n", fg_regs[i].name, regs[i], vals[i]);
+ 			fg_print_value(regs[i], vals[i]);
+ 		}
+@@ -438,7 +451,16 @@
+ 		return;
+ 	}
+ 	printf("SWEET FG: F2: reading the gauge at I2C %#x\n", fg.addr);
+-	(void)fg_session(i2c, regs, vals, sizeof regs, 1);
++	if (fg_session(i2c, fg.addr, 2, regs, vals, sizeof regs, 1) == 0 && fg.chg_addr != 0) {
++		static const uint8_t cregs[4] = { 0xB4, 0xB5, 0xB6, 0xB7 };   /* CHG_INT_OK, CHG_DETAILS_00/01/02 */
++		uint16_t cv[4];
++
++		printf("SWEET FG: F2: reading the charger at I2C %#x\n", fg.chg_addr);
++		if (fg_session(i2c, fg.chg_addr, 1, cregs, cv, 4, 2) == 0) {
++			printf("SWEET FG: charger CHGIN_OK %u WCIN_OK %u CHGIN_STS %u WCIN_STS %u CHG_DTLS %#x BAT_DTLS %#x\n", (cv[0] >> 6) & 1u,
++			    (cv[0] >> 5) & 1u, (cv[3] >> 5) & 1u, (cv[3] >> 4) & 1u, cv[2] & 0xfu, (cv[2] >> 4) & 7u);
++		}
++	}
+ 	__sync_lock_release(&fg.busy);
+ }
+ 
+@@ -481,7 +503,7 @@
+ 	if (!fg.parsed || !__sync_bool_compare_and_swap(&fg.busy, 0, 1)) {
+ 		return -1;
+ 	}
+-	rc = fg_bus_ok() ? fg_session(fg.s_i2c, regs, v, 4, 0) : -1;
++	rc = fg_bus_ok() ? fg_session(fg.s_i2c, fg.addr, 2, regs, v, 4, 0) : -1;
+ 	__sync_lock_release(&fg.busy);
+ 	if (rc) {
+ 		return rc;
+@@ -493,6 +515,26 @@
+ 	return 0;
+ }
+ 
++/* charger status for SweetBattery: st[0..3] = CHG_INT_OK, CHG_DETAILS_00, _01, _02 (read only). 0 = all four read; nonzero also when the
++ * board names no charger */
++int
++sweet_fg_charger(uint8_t st[4])
++{
++	static const uint8_t regs[4] = { 0xB4, 0xB5, 0xB6, 0xB7 };
++	uint16_t v[4];
++	int rc;
++
++	if (!fg.parsed || fg.chg_addr == 0 || !__sync_bool_compare_and_swap(&fg.busy, 0, 1)) {
++		return -1;
++	}
++	rc = fg_bus_ok() ? fg_session(fg.s_i2c, fg.chg_addr, 1, regs, v, 4, 0) : -1;
++	__sync_lock_release(&fg.busy);
++	for (unsigned i = 0; i < 4; i++) {
++		st[i] = rc ? 0 : (uint8_t)v[i];
++	}
++	return rc;
++}
++
+ /* F1: CMU words, USI mode, pads; the controller only behind its two gates */
+ static void
+ fg_run(void)
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -21,6 +21,8 @@
+ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+ /* bsd/dev/sweet_fg_gs101.c (patch 0158) */
+ extern "C" int sweet_fg_sample(unsigned *soc256, unsigned *mv, int *ma, int *centi_c);
++/* bsd/dev/sweet_fg_gs101.c (patch 0159): CHG_INT_OK, CHG_DETAILS_00/01/02 of the MAX77759 charger */
++extern "C" int sweet_fg_charger(uint8_t st[4]);
+ 
+ class SweetBattery : public IOPMPowerSource {
+ 	OSDeclareDefaultStructors(SweetBattery);
+@@ -37,6 +39,7 @@
+ 	unsigned fDesign;       /* design capacity, mAh */
+ 	int fTempCenti;         /* published Temperature, 0.01 C */
+ 	bool fTempMeasured, fSocEstimated;
++	bool fChargerKnown;     /* patch 0159: plug/charge state from the MAX77759 charger */
+ 	int fLastMode;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+@@ -68,6 +71,7 @@
+ 	fTempCenti = 2500;
+ 	fTempMeasured = false;
+ 	fSocEstimated = true;
++	fChargerKnown = false;
+ 	if (dictionary) {
+ 		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
+ 		if (!it) {
+@@ -146,6 +150,7 @@
+ 	putBool("SweetBatteryTemperatureEstimated", !(measured && fTempMeasured));
+ 	putBool("SweetBatteryFallback", !measured);
+ 	putNumber("SweetBatteryPercent", percent);
++	putBool("SweetBatteryChargerKnown", fChargerKnown);
+ 
+ 	/* IOPMCopyBatteryInfo's per-source compatibility dictionary. */
+ 	OSDictionary *legacy = OSDictionary::withCapacity(7);
+@@ -167,7 +172,7 @@
+ 		legacy->release();
+ 	}
+ 	updateStatus(); /* Flush PS properties and send 0xe0024100 on change. */
+-	int mode = measured ? 1 : 0;
++	int mode = measured ? (2 + (external ? 1 : 0) + (charging ? 2 : 0)) : 0;     /* log again when plug or charge state changes */
+ 	if (mode != fLastMode) {
+ 		IOLog("SWEET BATTERY: %s, %u%% %umV %dmA external=%d charging=%d\n",
+ 		    measured ? (fGauge ? "MAX77759 fuel gauge" : "PM6150 / estimated SOC") : "static fallback",
+@@ -233,11 +238,24 @@
+ 	if (percent > 100) {
+ 		percent = 100;
+ 	}
+-	/* No charger register is read yet (the MAX77759 charger is another I2C device): charging = current into the battery
+-	 * above the noise [guess on the sign: ModelGauge positive = charging]; external = charging or full. */
+-	bool charging = ma > 20;
+-	bool full = percent >= 100 && !charging;
+-	bool external = charging || full;
++	/* Patch 0159: the MAX77759 charger decides, as Google's driver does (max77759_charger.c:1907-1920 max77759_is_online:
++	 * CHGIN_OK or WCIN_OK in CHG_INT_OK, and CHGIN_STS or WCIN_STS in CHG_DETAILS_02; :1980-2006 max77759_get_status:
++	 * CHG_DTLS 0-3 charging, 4 done). Without a charger answer: charging = current into the battery above the noise
++	 * [guess on the sign: ModelGauge positive = charging], external = charging or full. */
++	uint8_t st[4];
++	bool charging, full, external;
++	if (sweet_fg_charger(st) == 0) {
++		unsigned dtls = st[2] & 0xfu;
++		external = (st[0] & 0x60u) != 0 && (st[3] & 0x30u) != 0;
++		charging = external && dtls <= 3;
++		full = external && (dtls == 4 || percent >= 100);
++		fChargerKnown = true;
++	} else {
++		charging = ma > 20;
++		full = percent >= 100 && !charging;
++		external = charging || full;
++		fChargerKnown = false;
++	}
+ 	fTempCenti = centi;
+ 	fTempMeasured = centi > -4000 && centi < 9000;
+ 	fSocEstimated = false;

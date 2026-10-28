@@ -34,6 +34,7 @@ class SweetFg(unittest.TestCase):
         self.assertEqual(p["pin-sda"], mkadt.u64(0x10C40060, 5))
         self.assertEqual(p["cmu-reg"], mkadt.u64(0x10C00000, 0x10000))
         self.assertEqual(struct.unpack("<10I", p["cmu-usi"]), (0x800, 0x600, 0x650, 0x654, 0x1810, 0x2030, 0x2050, 0x206C, 0x3030, 21))
+        self.assertEqual(struct.unpack("<I", p["chg-i2c-addr"])[0], 0x69)
 
     def test_only_boards_that_name_it(self):
         self.assertIsNone(node_props("bluejay", "sweet-fg"))

@@ -372,7 +372,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', no_ufs=False, wla
             # option, bus mux, USI mux, USI mux auto, divider, ipclk gate, pclk gate, rstnsync gate, QCH, gate bit
             ('cmu-usi', u32(n(o['option']), n(o['mux_bus']), n(u['mux']), n(u['mux_auto']), n(u['div']), n(u['gate_ipclk']),
                             n(u['gate_pclk']), n(u['gate_rstn']), n(u['qch']), n(c['bits']['gate_val']))),
-        ])
+        ] + ([('chg-i2c-addr', u32(n(config['fg_chg_addr'])))] if 'fg_chg_addr' in config else []))   # patch 0159: the MAX77759 charger
     fg = fg_node() if 'fg_usi' in config and not qemu else None
 
     # Identity of the iPhone X whose userland runs here: compatible[0] is
