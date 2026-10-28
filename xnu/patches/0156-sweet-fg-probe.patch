@@ -298,7 +298,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
  
  #define REG_CAP         0x00
  #define REG_IS          0x20
-@@ -705,6 +706,7 @@ sweet_ufs_init(void)
+@@ -705,5 +706,6 @@ sweet_ufs_init(void)
  	sweet_touch_gs101_init();     /* no-op without the ADT node /sweet-touch (bluejay only) */
  	sweet_gpu_gs101_init();       /* no-op without boot-arg sweetgpu= */
  	sweet_wlan_init();            /* no-op without boot-arg sweetwlan= */
