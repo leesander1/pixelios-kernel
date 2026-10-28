@@ -51,3 +51,34 @@ Reading [obs unless tagged]:
   TRANS_STATUS[3:0] = 2 (HSI2C_MASTER_ST_RESTART) with MASTER_BUSY (bit 17) mean the exynos7/autov9 layout: the transfer had just started,
   the register byte still in the TX FIFO (level 1). Also explains ABL's 0x00080001 (state 1 = START) [guess on bit 19].
 - fixed in 0157 (second version): INT_STATUS decode only, soft reset + full restore of ABL's setup after any failure.
+
+# F2, run fg2-oriole2 (kernel xnu-a9d94a8, 0157 second version): THE GAUGE READS
+    SWEET FG: F2: reading the gauge at I2C 0x36
+    SWEET FG: gauge DevName    [0x21] = 0x6200
+    SWEET FG: gauge Status     [0000] = 0x2000
+    SWEET FG: gauge RepSOC     [0x06] = 0x5afd
+    SWEET FG:   = 90.98 %
+    SWEET FG: gauge VCell      [0x09] = 0xd81e
+    SWEET FG:   = 4322 mV
+    SWEET FG: gauge Current    [0x0a] = 0x000b
+    SWEET FG:   = 3 mA (positive = charging [guess on the sign])
+    SWEET FG: gauge AvgCurrent [0x0b] = 0x0001
+    SWEET FG:   = 0 mA (positive = charging [guess on the sign])
+    SWEET FG: gauge Temp       [0x08] = 0x2402
+    SWEET FG:   = 36.0 C
+    SWEET FG: gauge RepCap     [0x05] = 0x0761
+    SWEET FG:   = 1889 (raw capacity units, ~mAh at 5 mOhm)
+    SWEET FG: gauge FullCapRep [0x35] = 0x081d
+    SWEET FG:   = 2077 (raw capacity units, ~mAh at 5 mOhm)
+    SWEET FG: gauge TTE        [0x11] = 0xffff
+    SWEET FG:   = 6143 min
+    SWEET FG: gauge TTF        [0x20] = 000000
+    SWEET FG:   = 0 min
+    SWEET FG: F2 done; ABL setup restored: CTL 0x48 FIFO_CTL 0x80083 CONF 0x980110ff AUTO_CONF 0x30001 TIMING_FS1 0x1f0ff00 INT_ENABLE 0x80 ADDR 0x9400; TRANS_STATUS 0x80001 FIFO_STATUS 0x1000100
+- DevName 0x6200: the MAX77759's ModelGauge m5 [guess on the decode: max1720x driver gauge-type check to cite]; RepSOC 90.98 %, VCell 4322 mV,
+  Current ~0 (phone on USB, full-ish), Temp 36.0 C, TTE 0xffff (no estimate), TTF 0.
+- every transfer done on ABL's timing, ABL setup back afterwards (CTL 0x48, CONF 0x980110ff, FS1 0x1f0ff00, ADDR 0x9400), no panic.
+- open: capacity scale. FullCapRep 2077 / RepCap 1889 raw vs. a 4520 mAh battery: 1 LSB is ~2 mAh, not the 1 mAh I assumed for 5 mOhm
+  (the ratio 1889/2077 = 90.9 % agrees with RepSOC). Either the effective rsense is 2.5 mOhm or the LSB formula differs: the current values
+  are then also 2x what F2 printed. The percentage (RepSOC) does not depend on it.
+- Next: F3 = SweetBattery (xnu 0061) takes RepSOC / VCell / AvgCurrent / Temp from this gauge on boards with /sweet-fg.
