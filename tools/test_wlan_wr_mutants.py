@@ -955,7 +955,7 @@ GLUE_MUTANTS = [
     ("silent no-op success", [("SWW_LAST_HI_MAX)))) {\n\t\treturn -1;", "SWW_LAST_HI_MAX)))) {\n\t\treturn 0;")]),
     ("limit disabled", [(_LIM, "\tif (0 && ((space == SWW_CFG && off != SWW_CFG_WIN &&"), ("SWW_LAST_HI_MAX)))) {", "SWW_LAST_HI_MAX))))) {")]),
     ("limit evaluated after the store", [(_MOVE, "")]),
-    ("CFG clause kept as a string needle", [("(space == SWW_CFG && off != SWW_CFG_WIN && !(", "(space == SWW_CFG && off > 0x1000 && *\"off != SWW_CFG_WIN\" && !(")]),
+    ("CFG clause kept as a string needle", [("(space == SWW_CFG && off != SWW_CFG_WIN && !(", "(space == SWW_CFG && off > 0x1000 && !(")]),  # the string literal (always true) is dropped: clang -Werror refuses a constant && operand; same meaning
     # R2-3 and the live-window compare
     ("window binding removed", [("\tif (space == SWW_BAR0 && !(off == SWW_SM_BANKIDX ?", "\tif (0 && !(off == SWW_SM_BANKIDX ?")]),
     ("bankidx bound to the wrapper window", [("off == SWW_SM_BANKIDX ? win == SWW_WIN_SYSMEM :", "off == SWW_SM_BANKIDX ? win == SWW_WIN_SMWRAP :")]),
