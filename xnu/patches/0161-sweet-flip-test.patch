@@ -1,9 +1,10 @@
 SWEET FLIP test (patch 0161, boot-arg sweetflip=1, default off; docs/research/44 section 2 step 5): the first page flip, reversible and outside CoreAnimation, to learn whether the display reads physical addresses without touching the SysMMU registers (the run 7 hang suspect). sweetflipdelay seconds (default 240) after AppleCLCD starts, three cycles of: RDMA L0 BASEADDR_Y8 := a colour-bar buffer at 0xC8000000 (low bank, no reserved node, outside XNU RAM), window 5 shadow update request, 5 s, back to 0xFAC00000, 5 s. Only from the display state run dpu2 observed; the buffer is filled and read back before any display register is written; the shadow address is logged at each latch.
+The buffer is mapped as the framebuffer surface is (IOMemoryDescriptor::withPhysicalAddress + map write-combined): ml_io_map of 10 MB panicked in kmem_alloc in run flip1-oriole1.
 
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -276,9 +276,130 @@
+@@ -276,6 +276,137 @@
  	(void)p0;
  	(void)p1;
  	sweet_fb_replay_once();
@@ -15,8 +16,10 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 + * below 4 GB work) without touching the SysMMU registers (the run 7 hang suspect). sweetflipdelay=S seconds after AppleCLCD starts
 + * (default 240), three times: show a buffer of colour bars for 5 s, then the boot framebuffer again for 5 s.
 + *   Buffer: 0xC8000000, 4320 x 2400 bytes, in the low-bank range no reserved-memory node uses (0xC0000000-0xE0000000, research 44 U4:
-+ *     sec_dram ends at 0xC0000000, sec_pt starts at 0xE0000000) and outside XNU's RAM (board.json xnu_ram 0x880000000+). Mapped with
-+ *     ml_io_map (uncached: the display sees every store), filled, and three words read back before any display register is touched.
++ *     sec_dram ends at 0xC0000000, sec_pt starts at 0xE0000000) and outside XNU's RAM (board.json xnu_ram 0x880000000+). Mapped as the
++ *     framebuffer surface is (IOMemoryDescriptor::withPhysicalAddress + map(kIOMapWriteCombineCache), SweetSurface.cpp:105, 246-247):
++ *     ml_io_map of 10 MB panicked in kmem_alloc (run flip1-oriole1, vm_kern.c:178, KVA for device mappings). Filled, dsb, and three
++ *     words read back before any display register is touched.
 + *   Flip: RDMA L0 RDMA_BASEADDR_Y8 (0x1C0B0000 + 0x40, regs-dpp.h:173, dpp_reg.c:686) := the buffer, then SHD_REG_UP_REQ (DECON0
 + *     0x1C300000 + 0x50) |= window 5 (SHD_REG_UP_REQ_WIN(5), regs-decon.h:143, decon_reg_update_req_window decon_reg.c:2045-2051);
 + *     the panel TE triggers frames continuously (TRIG_CON 0x3061, HW_TRIG_EN, regs-decon.h:97-116), so the next frame latches it.
@@ -65,11 +68,18 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +	(void)p1;
 +	static const uint32_t bars[8] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFFFFu, 0xFFFFFF00u, 0xFF00FFFFu, 0xFFFF00FFu, 0xFF000000u };
 +	vm_offset_t wincon = ml_io_map(0x1C330000, 0x6000);
-+	vm_offset_t buf = ml_io_map(SWEET_FLIP_BUF, SWEET_FLIP_STRIDE * SWEET_FLIP_H);
++	static IOMemoryDescriptor *md;
++	static IOMemoryMap *map;
++	vm_offset_t buf = 0;
++	if (md == NULL) {
++		md = IOMemoryDescriptor::withPhysicalAddress(SWEET_FLIP_BUF, SWEET_FLIP_STRIDE * SWEET_FLIP_H, kIODirectionInOut);
++		map = md != NULL ? md->map(kIOMapWriteCombineCache) : NULL;
++	}
++	buf = map != NULL ? (vm_offset_t)map->getVirtualAddress() : 0;
 +	sweet_flip_decon = ml_io_map(0x1C300000, 0x1000);
 +	sweet_flip_rdma = ml_io_map(0x1C0B0000, 0x1000);
 +	if (!wincon || !buf || !sweet_flip_decon || !sweet_flip_rdma) {
-+		IOLog("SWEET FLIP: a mapping failed, no test\n");
++		IOLog("SWEET FLIP: a mapping failed (buffer va 0x%lx), no test\n", (unsigned long)buf);
 +		return;
 +	}
 +	uint32_t con5 = SWEET_FLIP_RD(wincon, 0x5000), y8 = SWEET_FLIP_RD(sweet_flip_rdma, 0x40), shd = SWEET_FLIP_RD(sweet_flip_rdma, 0x440);
@@ -87,6 +97,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +			row[x] = (x < 40 || x >= SWEET_FLIP_W - 40) ? 0xFF808080u : c;     /* grey edges: shows the whole width is read */
 +		}
 +	}
++	__asm__ volatile ("dsb sy" ::: "memory");      /* write-combined stores out before the display reads them */
 +	uint32_t r0 = *(volatile uint32_t *)(buf + 100 * 4), r1 = *(volatile uint32_t *)(buf + 1000 * SWEET_FLIP_STRIDE + 500 * 4);
 +	uint32_t r2 = *(volatile uint32_t *)(buf + 2399 * SWEET_FLIP_STRIDE + 1079 * 4);
 +	IOLog("SWEET FLIP: read back 0x%08x 0x%08x 0x%08x (want 0xffff0000 0xffffffff 0xff808080)\n", r0, r1, r2);
@@ -108,9 +119,9 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +	IOLog("SWEET FLIP: done (shd 0x%08x)\n", SWEET_FLIP_RD(sweet_flip_rdma, 0x440));
 +#undef SWEET_FLIP_RD
 +#undef SWEET_FLIP_WR
- }
- 
- static void
++}
++
++static void
 +sweet_flip_arm(void)
 +{
 +	int on = 0, delay_s = 240;
@@ -128,13 +139,10 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +		nanoseconds_to_deadline((uint64_t)delay_s * NSEC_PER_SEC, &deadline);
 +		thread_call_enter_delayed(tc, deadline);
 +	}
-+}
-+
-+static void
- sweet_fb_replay_arm(void)
- {
- 	char probe[4];
-@@ -573,6 +694,7 @@
+ }
+ 
+ static void
+@@ -573,6 +704,7 @@
  	}
  	OSSafeReleaseNULL(ns);
  	sweet_fb_replay_arm();          /* patch 0152 */

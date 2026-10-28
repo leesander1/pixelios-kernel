@@ -1,0 +1,8 @@
+# Page-flip test on oriole (xnu 0161, sweetflip=1), docs/research/44 section 2 step 5
+
+## Run flip1-oriole1 (2026-10-28 12:53Z, kernel xnu-e1a0b5e, sweetflip=1 sweetflipdelay=240 sweetfg=2): panic before the flip
+- photo of the panel (the user): panic(cpu 1 ...): kmem_alloc(..., 10371072, 0x100021) failed with 3 @vm_kern.c:178
+  = ml_io_map(0xC8000000, 4320 x 2400 rounded to pages): no kernel VA for a 10 MB device mapping. No display register was written
+  (the mapping is the first step of the test). The USB log ends at the F2 lines (+~200 s); "SWEET FLIP: armed" came before the USB link.
+- fix: the buffer is mapped like the framebuffer surface (IOMemoryDescriptor::withPhysicalAddress + map write-combined).
+- same photo, 0160 on the chip: TaskPeriod 0x2d00 = 351 ms, RepCap 3762 mAh, FullCapRep 4154 mAh, RepSOC 90.57 %, Temp 33.1 C.
