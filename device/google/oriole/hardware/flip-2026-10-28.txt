@@ -6,3 +6,21 @@
   (the mapping is the first step of the test). The USB log ends at the F2 lines (+~200 s); "SWEET FLIP: armed" came before the USB link.
 - fix: the buffer is mapped like the framebuffer surface (IOMemoryDescriptor::withPhysicalAddress + map write-combined).
 - same photo, 0160 on the chip: TaskPeriod 0x2d00 = 351 ms, RepCap 3762 mAh, FullCapRep 4154 mAh, RepSOC 90.57 %, Temp 33.1 C.
+
+## Run flip1-oriole2 (2026-10-28 23:48Z, kernel xnu-ece81eb, sweetflip=1 sweetflipdelay=240 sweetreplay=FLIP): every flip latched, no panic
+    REPLAY: SWEET FLIP: armed, test in 240 s
+    SWEET FLIP: state win5 con 0x00000001 rdma L0 y8 0xfac00000 shd 0xfac00000 img 0x09600438 up_req 0x00000000
+    SWEET FLIP: filling the test buffer at 0xc8000000 (colour bars)
+    SWEET FLIP: read back 0xffff0000 0xffffffff 0xff808080 (want 0xffff0000 0xffffffff 0xff808080)
+    SWEET FLIP: cycle 1: colour bars for 5 s
+    SWEET FLIP: to bars 0xc8000000 latched after 1144 us (y8 0xc8000000 shd 0xc8000000 up_req 0x00000000)
+    SWEET FLIP: back to fb 0xfac00000 latched after 7949 us (y8 0xfac00000 shd 0xfac00000 up_req 0x00000000)
+    SWEET FLIP: cycle 2: colour bars for 5 s
+    SWEET FLIP: to bars 0xc8000000 latched after 7942 us (y8 0xc8000000 shd 0xc8000000 up_req 0x00000000)
+    SWEET FLIP: back to fb 0xfac00000 latched after 6813 us (y8 0xfac00000 shd 0xfac00000 up_req 0x00000000)
+    SWEET FLIP: cycle 3: colour bars for 5 s
+    SWEET FLIP: to bars 0xc8000000 latched after 6867 us (y8 0xc8000000 shd 0xc8000000 up_req 0x00000000)
+    SWEET FLIP: back to fb 0xfac00000 latched after 7836 us (y8 0xfac00000 shd 0xfac00000 up_req 0x00000000)
+    SWEET FLIP: done (shd 0xfac00000)
+- the shadow (active) RDMA L0 address follows each write within one TE frame (1-8 ms); window 5 update request clears; restored to 0xfac00000 at the end.
+- what the panel showed during the 5 s windows: (the user's photo/description, pending)
