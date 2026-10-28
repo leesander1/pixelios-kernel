@@ -1,0 +1,366 @@
+SWEET FG F3 (patch 0158, docs/research/47 stage F3): the real battery in iOS on the Pixel 6. bsd/dev/sweet_fg_gs101.c gets sweet_fg_sample() (the F2 checks and transfers, quiet, mapped once, one user of the controller at a time; the ADT node is now parsed whenever it exists) and SweetBattery (xnu 0061) gets sweetbattery=2: every 30 s RepSOC (percent), VCell, AvgCurrent and Temp from the MAX77759 gauge, design capacity 4520 mAh, measured temperature. Charging = average current above 20 mA into the battery and external = charging or full (no charger register read yet). Until the first good sample the old static 100 % fallback is published. sweetbattery=0/1 are unchanged.
+
+diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
+--- a/bsd/dev/sweet_fg_gs101.c
++++ b/bsd/dev/sweet_fg_gs101.c
+@@ -10,6 +10,9 @@
+  *    controller's transfer registers (ADDR, FIFO_CTL, CTL channel bits, INT_ENABLE, INT_STATUS clear, AUTO_CONF, TX_DATA) are
+  *    written in a transfer; ABL's whole controller setup is saved first and written back at the end, after a soft reset of the
+  *    controller when anything failed. Nothing is written to the gauge's registers.
++ * F3 (patch 0158): sweet_fg_sample() = the same checks and transfers, quiet, for SweetBattery (iokit/Kernel/arm/SweetBattery.cpp,
++ *    boot-arg sweetbattery=2), every 30 s: RepSOC, VCell, AvgCurrent, Temp. A sample is skipped (returns nonzero) when the bus is
++ *    not as ABL leaves it or another F2/F3 user holds it.
+  *
+  * Silent no-op unless the ADT has /sweet-fg (tools/mkadt.py adds it only for boards whose board.json has fg_usi) and
+  * the boot-arg sweetfg=1 is given. Every address comes from that node (soc.json / board.json, sources cited there).
+@@ -56,6 +59,7 @@
+ extern void thread_deallocate(thread_t);
+ extern kern_return_t thread_terminate(thread_t);
+ void sweet_fg_gs101_init(void);
++int sweet_fg_sample(unsigned *soc256, unsigned *mv, int *ma, int *centi_c);
+ 
+ #define FG_COMPAT        "google,gs101-max77759-fg"
+ #define FG_PAGE          0x4000u          /* kernel page: ml_io_map maps whole pages */
+@@ -130,6 +134,9 @@
+ 	uint32_t c_option, c_mux_bus, c_mux, c_mux_auto, c_div, c_ipclk, c_pclk, c_rstn, c_qch, gate_bit;
+ 	uint32_t delay_s;
+ 	int sleep_chan;
++	bool parsed;
++	vm_offset_t s_cmu, s_mode, s_scl, s_sda, s_i2c;   /* F3: mapped once */
++	volatile int busy;                              /* one F2/F3 user of the controller at a time */
+ } fg;
+ 
+ static uint32_t
+@@ -367,11 +374,12 @@
+ 	}
+ }
+ 
+-static void
+-fg_f2(vm_offset_t i2c)
++/* one F2/F3 session: controller idle check, ABL's setup saved, the n registers read (printed when verbose), soft reset after a
++ * failure, ABL's setup written back. 0 = all read; the caller holds fg.busy */
++static int
++fg_session(vm_offset_t i2c, const uint8_t *regs, uint16_t *vals, unsigned n, int verbose)
+ {
+ 	uint32_t ctl, fs, ts;
+-	uint16_t v;
+ 	const char *why = "";
+ 	int rc = 0;
+ 	unsigned i, nsaved = sizeof fg_saved_offs / sizeof fg_saved_offs[0];
+@@ -379,21 +387,22 @@
+ 	ts = fg_rd(i2c, I2C_TRANS_STATUS);
+ 	fs = fg_rd(i2c, I2C_FIFO_STATUS);
+ 	if ((ts & TS_MASTER_BUSY) || !(fs & FIFO_RX_EMPTY) || !(fs & FIFO_TX_EMPTY)) {
+-		printf("SWEET FG: F2 not started: controller busy or FIFOs not empty (TRANS_STATUS %#x FIFO_STATUS %#x)\n", ts, fs);
+-		return;
++		printf("SWEET FG: gauge read not started: controller busy or FIFOs not empty (TRANS_STATUS %#x FIFO_STATUS %#x)\n", ts, fs);
++		return -3;
+ 	}
+ 	for (i = 0; i < nsaved; i++) {
+ 		fg_saved[i] = fg_rd(i2c, fg_saved_offs[i]);
+ 	}
+-	printf("SWEET FG: F2: reading the gauge at I2C %#x\n", fg.addr);
+-	for (i = 0; i < sizeof fg_regs / sizeof fg_regs[0]; i++) {
+-		rc = fg_reg(i2c, fg_regs[i].reg, &v, &why);
++	for (i = 0; i < n; i++) {
++		rc = fg_reg(i2c, regs[i], &vals[i], &why);
+ 		if (rc) {
+-			printf("SWEET FG: F2 %s (%#04x) failed: %s\n", fg_regs[i].name, fg_regs[i].reg, why);
++			printf("SWEET FG: gauge register %#04x failed: %s\n", regs[i], why);
+ 			break;
+ 		}
+-		printf("SWEET FG: gauge %-10s [%#04x] = %#06x\n", fg_regs[i].name, fg_regs[i].reg, v);
+-		fg_print_value(fg_regs[i].reg, v);
++		if (verbose) {
++			printf("SWEET FG: gauge %-10s [%#04x] = %#06x\n", fg_regs[i].name, regs[i], vals[i]);
++			fg_print_value(regs[i], vals[i]);
++		}
+ 	}
+ 	if (rc != 0) {      /* any failure: soft reset (exynos5_i2c_reset :454-461) so no transfer stays queued, then ABL's values below */
+ 		ctl = fg_rd(i2c, I2C_CTL);
+@@ -405,11 +414,85 @@
+ 	for (i = 0; i < nsaved; i++) {
+ 		fg_wr(i2c, fg_saved_offs[i], fg_saved[i]);
+ 	}
++	if (!verbose && rc == 0) {
++		return 0;
++	}
+ 	printf("SWEET FG: F2 %s; ABL setup restored: CTL %#x FIFO_CTL %#x CONF %#x AUTO_CONF %#x TIMING_FS1 %#x INT_ENABLE %#x ADDR %#x; TRANS_STATUS %#x FIFO_STATUS %#x\n",
+ 	    rc ? "stopped" : "done", fg_rd(i2c, I2C_CTL), fg_rd(i2c, I2C_FIFO_CTL), fg_rd(i2c, 0x40), fg_rd(i2c, I2C_AUTO_CONF), fg_rd(i2c, 0x60),
+ 	    fg_rd(i2c, I2C_INT_ENABLE), fg_rd(i2c, I2C_ADDR), fg_rd(i2c, I2C_TRANS_STATUS), fg_rd(i2c, I2C_FIFO_STATUS));
++	return rc;
++}
++
++static void
++fg_f2(vm_offset_t i2c)
++{
++	uint8_t regs[sizeof fg_regs / sizeof fg_regs[0]];
++	uint16_t vals[sizeof fg_regs / sizeof fg_regs[0]];
++	unsigned i;
++
++	for (i = 0; i < sizeof fg_regs / sizeof fg_regs[0]; i++) {
++		regs[i] = fg_regs[i].reg;
++	}
++	if (!__sync_bool_compare_and_swap(&fg.busy, 0, 1)) {
++		printf("SWEET FG: F2 not started: the controller is in use (F3)\n");
++		return;
++	}
++	printf("SWEET FG: F2: reading the gauge at I2C %#x\n", fg.addr);
++	(void)fg_session(i2c, regs, vals, sizeof regs, 1);
++	__sync_lock_release(&fg.busy);
++}
++
++/* F3: the bus as ABL leaves it (both gates on, USI in I2C mode, pads in function 2 and high); maps once */
++static bool
++fg_bus_ok(void)
++{
++	uint32_t gb = 1u << fg.gate_bit, pc;
++
++	if (!fg.s_i2c) {
++		fg.s_cmu = fg_map(fg.cmu_pa, fg.cmu_size);
++		fg.s_mode = fg_map(fg.mode_pa, 4);
++		fg.s_scl = fg_map(fg.scl_bank, 0x20);
++		fg.s_sda = fg_map(fg.sda_bank, 0x20);
++		if (!fg.s_cmu || !fg.s_mode || !fg.s_scl || !fg.s_sda) {
++			return false;
++		}
++		if (!(fg_rd(fg.s_cmu, fg.c_ipclk) & gb) || !(fg_rd(fg.s_cmu, fg.c_pclk) & gb)) {
++			return false;      /* never map, never read the controller while it is gated */
++		}
++		fg.s_i2c = fg_map(fg.i2c_pa, fg.i2c_size);
++		if (!fg.s_i2c) {
++			return false;
++		}
++	}
++	pc = ((fg_rd(fg.s_scl, PIN_CON) >> (4u * fg.scl_pin)) & 0xfu) | ((fg_rd(fg.s_sda, PIN_CON) >> (4u * fg.sda_pin)) & 0xfu) << 4;
++	return (fg_rd(fg.s_cmu, fg.c_ipclk) & gb) && (fg_rd(fg.s_cmu, fg.c_pclk) & gb) && (fg_rd(fg.s_mode, 0) & fg.mode_mask) == fg.mode_i2c &&
++	       pc == 0x22u && ((fg_rd(fg.s_scl, PIN_DAT) >> fg.scl_pin) & 1u) && ((fg_rd(fg.s_sda, PIN_DAT) >> fg.sda_pin) & 1u);
+ }
+ 
++/* F3 sample for SweetBattery: state of charge in 1/256 %, cell voltage mV, average current mA (positive = into the battery
++ * [guess on the sign]; scale as F2, 2x open: fg-2026-10-27.txt), temperature in 0.01 C. 0 = all four read. */
++int
++sweet_fg_sample(unsigned *soc256, unsigned *mv, int *ma, int *centi_c)
++{
++	static const uint8_t regs[4] = { 0x06, 0x09, 0x0B, 0x08 };     /* RepSOC, VCell, AvgCurrent, Temp (max1720x.h) */
++	uint16_t v[4];
++	int rc;
++
++	if (!fg.parsed || !__sync_bool_compare_and_swap(&fg.busy, 0, 1)) {
++		return -1;
++	}
++	rc = fg_bus_ok() ? fg_session(fg.s_i2c, regs, v, 4, 0) : -1;
++	__sync_lock_release(&fg.busy);
++	if (rc) {
++		return rc;
++	}
++	*soc256 = v[0];
++	*mv = (unsigned)(((uint64_t)v[1] * 78125u) / 1000000u);
++	*ma = (int)((int64_t)(int16_t)v[2] * 156250 / FG_RSENSE / 1000);
++	*centi_c = (int)(int16_t)v[3] * 100 / 256;
++	return 0;
++}
++
+ /* F1: CMU words, USI mode, pads; the controller only behind its two gates */
+ static void
+ fg_run(void)
+@@ -493,6 +576,11 @@
+ 	    compat == NULL || csize < sizeof(FG_COMPAT) || strncmp(compat, FG_COMPAT, sizeof(FG_COMPAT)) != 0) {
+ 		return;    /* not this board: stay silent */
+ 	}
++	if (!fg_parse(node)) {
++		printf("SWEET FG: /sweet-fg is incomplete, not started\n");
++		return;
++	}
++	fg.parsed = true;      /* F3 (sweet_fg_sample) may run from here on, also without sweetfg= */
+ 	(void)PE_parse_boot_argn("sweetfg", &mode, sizeof(mode));
+ 	if (mode != 1 && mode != 2) {
+ 		return;
+@@ -501,10 +589,6 @@
+ 	if (delay_s < 0 || delay_s > 3600) {
+ 		delay_s = 60;
+ 	}
+-	if (!fg_parse(node)) {
+-		printf("SWEET FG: /sweet-fg is incomplete, not started\n");
+-		return;
+-	}
+ 	fg.delay_s = (uint32_t)delay_s;
+ 	fg.mode = mode;
+ 	if (kernel_thread_start(fg_thread, NULL, &thread) == KERN_SUCCESS) {
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -3,6 +3,10 @@
+  * sweetbattery=1: read-only PM6150 polling every 30 seconds; voltage-derived
+  * SOC is an UNCALIBRATED estimate, not a replacement for the Linux QG algo.
+  * See report.md for binary evidence, register provenance and integration.
++ * sweetbattery=2 (patch 0158, gs101 boards with ADT /sweet-fg): the MAX77759
++ * fuel gauge's own RepSOC, VCell, AvgCurrent and Temp every 30 seconds
++ * (bsd/dev/sweet_fg_gs101.c sweet_fg_sample, docs/research/47 F3); design
++ * capacity 4520 mAh (google,chg-battery-capacity, gs101-oriole-battery.dtsi:9-11).
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <device/device_types.h> /* io_buf_ptr_t for private OSKext headers */
+@@ -15,6 +19,8 @@
+ /* bsd/dev/sweet_spmi.c */
+ extern "C" int sweet_spmi_init(void);
+ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
++/* bsd/dev/sweet_fg_gs101.c (patch 0158) */
++extern "C" int sweet_fg_sample(unsigned *soc256, unsigned *mv, int *ma, int *centi_c);
+ 
+ class SweetBattery : public IOPMPowerSource {
+ 	OSDeclareDefaultStructors(SweetBattery);
+@@ -27,12 +33,17 @@
+ 	IOWorkLoop *fLoop;
+ 	IOTimerEventSource *fTimer;
+ 	bool fTimerAdded, fRunning, fReal;
++	bool fGauge;            /* sweetbattery=2: the gs101 fuel gauge */
++	unsigned fDesign;       /* design capacity, mAh */
++	int fTempCenti;         /* published Temperature, 0.01 C */
++	bool fTempMeasured, fSocEstimated;
+ 	int fLastMode;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+ 	void publish(unsigned percent, unsigned mv, int ma, bool external,
+ 	    bool capable, bool charging, bool full, bool measured, bool currentValid);
+ 	void poll(void);
++	bool pollGauge(void);
+ 	static void timerFired(OSObject *owner, IOTimerEventSource *sender);
+ 	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
+ 	static bool readWord(unsigned address, uint16_t *value);
+@@ -52,6 +63,11 @@
+ 	fLoop = NULL;
+ 	fTimer = NULL;
+ 	fTimerAdded = fRunning = fReal = false;
++	fGauge = false;
++	fDesign = 5020;
++	fTempCenti = 2500;
++	fTempMeasured = false;
++	fSocEstimated = true;
+ 	if (dictionary) {
+ 		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
+ 		if (!it) {
+@@ -101,11 +117,11 @@
+ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+     bool capable, bool charging, bool full, bool measured, bool currentValid)
+ {
+-	/* Use consistent mAh units (DT nominal=5020). powerd computes C*100/M. */
+-	const unsigned capacity = (5020u * percent + 50u) / 100u;
++	/* Use consistent mAh units (fDesign: DT nominal 5020, or 4520 for the gs101 gauge). powerd computes C*100/M. */
++	const unsigned capacity = (fDesign * percent + 50u) / 100u;
+ 	setBatteryInstalled(true);
+ 	setCurrentCapacity(capacity);
+-	setMaxCapacity(5020);
++	setMaxCapacity(fDesign);
+ 	setExternalConnected(external);
+ 	setExternalChargeCapable(capable);
+ 	setIsCharging(charging);
+@@ -119,15 +135,15 @@
+ 	putBool("FullyCharged", full);
+ 	putBool("AppleRawExternalConnected", external);
+ 	putNumber("AppleRawCurrentCapacity", capacity);
+-	putNumber("AppleRawMaxCapacity", 5020);
+-	putNumber("DesignCapacity", 5020);
++	putNumber("AppleRawMaxCapacity", fDesign);
++	putNumber("DesignCapacity", fDesign);
+ 	putNumber("InstantAmperage", (UInt32)ma);
+-	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
+-	putNumber("Temperature", 2500);
++	/* iOS battery convention: centidegrees C; fixed 25 C unless the gauge measured it. */
++	putNumber("Temperature", (UInt32)(measured && fTempMeasured ? fTempCenti : 2500));
+ 	putBool("SweetBatteryHardwareSampleValid", measured);
+ 	putBool("SweetBatteryCurrentValid", currentValid);
+-	putBool("SweetBatterySOCEstimated", measured);
+-	putBool("SweetBatteryTemperatureEstimated", true);
++	putBool("SweetBatterySOCEstimated", measured && fSocEstimated);
++	putBool("SweetBatteryTemperatureEstimated", !(measured && fTempMeasured));
+ 	putBool("SweetBatteryFallback", !measured);
+ 	putNumber("SweetBatteryPercent", percent);
+ 
+@@ -137,7 +153,7 @@
+ 		const char *keys[] = {kIOBatteryCurrentChargeKey, kIOBatteryCapacityKey,
+ 		    kIOBatteryVoltageKey, kIOBatteryAmperageKey, kIOBatteryCycleCountKey,
+ 		    kIOBatteryFlagsKey};
+-		UInt32 values[] = {capacity, 5020, mv, (UInt32)ma, 0,
++		UInt32 values[] = {capacity, fDesign, mv, (UInt32)ma, 0,
+ 		    (UInt32)(kIOBatteryInstalled | (external ? kIOBatteryChargerConnect : 0) |
+ 		    (charging ? kIOBatteryCharge : 0))};
+ 		for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+@@ -153,9 +169,9 @@
+ 	updateStatus(); /* Flush PS properties and send 0xe0024100 on change. */
+ 	int mode = measured ? 1 : 0;
+ 	if (mode != fLastMode) {
+-		IOLog("SWEET BATTERY: %s, %u%% %umV external=%d charging=%d\n",
+-		    measured ? "PM6150 / estimated SOC" : "static fallback",
+-		    percent, mv, external, charging);
++		IOLog("SWEET BATTERY: %s, %u%% %umV %dmA external=%d charging=%d\n",
++		    measured ? (fGauge ? "MAX77759 fuel gauge" : "PM6150 / estimated SOC") : "static fallback",
++		    percent, mv, ma, external, charging);
+ 		fLastMode = mode;
+ 	}
+ }
+@@ -203,9 +219,41 @@
+ 	return 100;
+ }
+ 
++/* sweetbattery=2: one gauge sample published; false = no valid sample (the caller publishes the fallback) */
++bool
++SweetBattery::pollGauge(void)
++{
++	unsigned soc256, mv;
++	int ma, centi;
++
++	if (sweet_fg_sample(&soc256, &mv, &ma, &centi) != 0 || mv < 2800 || mv > 4600 || soc256 > 0xFFFFu) {
++		return false;
++	}
++	unsigned percent = (soc256 + 128u) / 256u;
++	if (percent > 100) {
++		percent = 100;
++	}
++	/* No charger register is read yet (the MAX77759 charger is another I2C device): charging = current into the battery
++	 * above the noise [guess on the sign: ModelGauge positive = charging]; external = charging or full. */
++	bool charging = ma > 20;
++	bool full = percent >= 100 && !charging;
++	bool external = charging || full;
++	fTempCenti = centi;
++	fTempMeasured = centi > -4000 && centi < 9000;
++	fSocEstimated = false;
++	publish(percent, mv, ma, external, external, charging, full, true, true);
++	return true;
++}
++
+ void
+ SweetBattery::poll(void)
+ {
++	if (fGauge) {
++		if (!pollGauge()) {
++			publish(100, 4200, 0, true, true, false, true, false, false);
++		}
++		return;
++	}
+ 	uint8_t type, present, usb, path, charger, error, temperature;
+ 	uint16_t rawVoltage;
+ 	bool valid = fReal &&
+@@ -265,9 +313,13 @@
+ 	int real = 0;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+ 	fReal = real == 1 && sweet_spmi_init() == 0;
++	if (real == 2) {        /* patch 0158: the gs101 fuel gauge; until a sample succeeds (the gauge driver may start after this service) the static fallback is published, polled every 30 s */
++		fGauge = true;
++		fDesign = 4520;
++	}
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+-	if (fReal) {
++	if (fReal || fGauge) {
+ 		fLoop = IOWorkLoop::workLoop();
+ 		fTimer = IOTimerEventSource::timerEventSource(this, &SweetBattery::timerFired);
+ 		if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
+@@ -276,6 +328,7 @@
+ 			fTimer->setTimeoutMS(30000);
+ 		} else {
+ 			fReal = false;
++			fGauge = false;
+ 			poll();
+ 			IOLog("SWEET BATTERY: timer unavailable; static fallback\n");
+ 		}
