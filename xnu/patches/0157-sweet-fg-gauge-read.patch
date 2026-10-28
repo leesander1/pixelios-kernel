@@ -1,9 +1,10 @@
 SWEET FG F2 (patch 0157, docs/research/47 stage F2): boot-arg sweetfg=2 = F1, then the first reads of the MAX77759 fuel gauge (I2C 0x36 on HSI2C12): DevName, Status, RepSOC, VCell, Current, AvgCurrent, Temp, RepCap, FullCapRep, TTE, TTF, each as one auto-mode pointer write (no stop) and one 2-byte read (stop), polled, on ABL's clock and timing setup (observed in run fg1-oriole1). Only started when F1 saw the bus as ABL leaves it (gates on, USI I2C mode, pads function 2 and high, controller idle, FIFOs empty). The transfer registers it writes (ADDR, FIFO_CTL, INT_ENABLE, AUTO_CONF, CTL) are saved first and written back at the end, also after an error (after a soft reset when a transfer did not end). No gauge register is written. sweetfg=1 is unchanged.
+Run fg2-oriole1 showed the controller is the exynos7/autov9 kind (status and errors in INT_STATUS, TRANS_STATUS[3:0] = master state): the first version read the master state as an abort. Errors and done now come from INT_STATUS only, and after any failure the controller is soft-reset and ABL's whole setup (17 registers) is written back.
 
 diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 --- a/bsd/dev/sweet_fg_gs101.c
 +++ b/bsd/dev/sweet_fg_gs101.c
-@@ -1,20 +1,32 @@
+@@ -1,20 +1,34 @@
  /*
 - * Pixel 6 (gs101, "oriole") battery fuel gauge, stage F1 (docs/research/47): a READ-ONLY look at the bus the MAX77759
 - * gauge sits on (HSI2C12 = USI12 of PERIC1, gauge at I2C 0x36). Nothing is written: no register of the CMU, the sysreg,
@@ -19,8 +20,8 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 + *    function 2 and high, controller idle with empty FIFOs), reads gauge registers: per register one auto-mode write of the
 + *    register number (no stop) and one 2-byte read with stop, polled, using ABL's clock/timing setup unchanged. Only the
 + *    controller's transfer registers (ADDR, FIFO_CTL, CTL channel bits, INT_ENABLE, INT_STATUS clear, AUTO_CONF, TX_DATA) are
-+ *    written; every register F2 touches is saved first and written back at the end, also after an error (after a soft reset
-+ *    of the controller when a transfer timed out). Nothing is written to the gauge's registers.
++ *    written in a transfer; ABL's whole controller setup is saved first and written back at the end, after a soft reset of the
++ *    controller when anything failed. Nothing is written to the gauge's registers.
   *
   * Silent no-op unless the ADT has /sweet-fg (tools/mkadt.py adds it only for boards whose board.json has fg_usi) and
   * the boot-arg sweetfg=1 is given. Every address comes from that node (soc.json / board.json, sources cited there).
@@ -36,14 +37,16 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 + *  - HSI2C registers: Linux drivers/i2c/busses/i2c-exynos5.c:37-60 (CTL 0x00 .. ADDR 0x70); bits :63-161; the auto-mode
 + *    transfer of exynos5_i2c_message_start :680-743 and the polled path exynos5_i2c_poll_irqs_timeout :745-761 (100 ms,
 + *    EXYNOS5_I2C_TIMEOUT :165), the done/error decode for both variants exynos5_i2c_irq :491-543, bus idle = MASTER_BUSY clear
-+ *    exynos5_i2c_wait_bus_idle :601-617, soft reset = CTL SW_RST set then clear exynos5_i2c_reset :450-461. Which variant the
-+ *    gs101 block is (status in INT_STATUS or in TRANS_STATUS) is not in the mainline driver, so F2 accepts either [guess].
++ *    exynos5_i2c_wait_bus_idle :601-617, soft reset = CTL SW_RST set then clear exynos5_i2c_reset :450-461. The gs101 block is
++ *    the exynos7/autov9 kind: transfer status and errors in INT_STATUS, TRANS_STATUS[3:0] = master state (HSI2C_MASTER_ST_*,
++ *    :142-157, read so by exynos5_i2c_bus_check :644-666) [obs run fg2-oriole1: INT_STATUS 0x1 with TRANS_STATUS 0xa0002 =
++ *    state RESTART + MASTER_BUSY while the first byte was still queued; reading bit 1 as TRANS_ABORT was wrong].
 + *  - MAX77759 fuel gauge (ModelGauge m5) registers and units: kernel/google-modules/bms (same branch) max1720x.h:27-76,
 + *    max1720x_battery.c:522-544, max1720x_battery.h:46-50; rsense 500 x 10 uOhm (gs101-raviole-battery.dtsi:155-166).
   *  - USI: Linux drivers/soc/samsung/exynos-usi.c:19-34 (SW_CONF I2C = BIT(2), USI_CON 0x04, USI_OPTION 0x08); the USI
   *    block at engine + usi-regs-offset is the same guess the touch driver makes (sweet_touch_gs101.c header).
   *  - CMU_PERIC1 USI12 chain: Linux drivers/clk/samsung/clk-gs101.c:4047-4048 (mux 0x650/0x654), :4059 (div 0x1810),
-@@ -31,6 +43,7 @@
+@@ -31,6 +45,7 @@
  #include <kern/thread.h>
  #include <kern/sched_prim.h>
  #include <machine/machine_routines.h>
@@ -51,7 +54,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  #include <pexpert/pexpert.h>
  #include <pexpert/device_tree.h>
  #include <libkern/libkern.h>
-@@ -50,6 +63,50 @@
+@@ -50,6 +65,45 @@
  #define PIN_DAT          0x04u
  #define PIN_PUD          0x08u
  
@@ -81,7 +84,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 +#define INT_NO_DEV_ACK   (1u << 9)      /* = HSI2C_INT_I2C of the exynos5 variant */
 +#define INT_NO_DEV       (1u << 10)
 +#define INT_TIMEOUT      (1u << 11)
-+#define INT_ERRORS       (INT_TRANS_ABORT | INT_NO_DEV | INT_TIMEOUT)
++#define INT_ERRORS       (INT_TRANS_ABORT | INT_NO_DEV_ACK | INT_NO_DEV | INT_TIMEOUT)
 +#define FIFO_RX_EMPTY    (1u << 24)
 +#define FIFO_RX_LVL(x)   (((x) >> 16) & 0x7fu)
 +#define FIFO_TX_EMPTY    (1u << 8)
@@ -89,12 +92,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 +#define AUTO_STOP        (1u << 17)
 +#define AUTO_RUN         (1u << 31)
 +#define TS_MASTER_BUSY   (1u << 17)
-+#define TS_TIMEOUT_AUTO  (1u << 4)
-+#define TS_NO_DEV        (1u << 3)
-+#define TS_NO_DEV_ACK    (1u << 2)
-+#define TS_TRANS_ABORT   (1u << 1)
-+#define TS_TRANS_DONE    (1u << 0)
-+#define TS_ERRORS        (TS_TIMEOUT_AUTO | TS_NO_DEV | TS_NO_DEV_ACK | TS_TRANS_ABORT)
++#define TS_MASTER_ST(x)  ((x) & 0xfu)
 +#define SLV_ADDR_MAS(x)  (((x) & 0x3ffu) << 10)
 +#define I2C_TIMEOUT_US   100000u        /* EXYNOS5_I2C_TIMEOUT 100 ms */
 +#define FG_RSENSE        500u           /* maxim,rsense-default, units of 10 uOhm (5 mOhm) */
@@ -102,7 +100,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  /* USI (exynos-usi.c) */
  #define USI_CON          0x04u
  #define USI_OPTION       0x08u
-@@ -63,7 +120,14 @@
+@@ -63,7 +117,14 @@
  	{ 0x64, "TIMING_FS2" }, { 0x68, "TIMING_FS3" }, { 0x6C, "TIMING_SLA" }, { 0x70, "ADDR" },
  };
  
@@ -117,7 +115,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  	uint64_t i2c_pa, i2c_size, mode_pa, cmu_pa, cmu_size, scl_bank, sda_bank;
  	uint32_t usi_off, mode_i2c, mode_mask, addr, scl_pin, sda_pin;
  	uint32_t c_option, c_mux_bus, c_mux, c_mux_auto, c_div, c_ipclk, c_pclk, c_rstn, c_qch, gate_bit;
-@@ -80,6 +144,21 @@
+@@ -80,6 +141,21 @@
  }
  
  static void
@@ -139,7 +137,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  fg_sleep_ms(unsigned ms)
  {
  	uint64_t deadline;
-@@ -162,17 +241,177 @@
+@@ -162,17 +238,176 @@
  	       fg.gate_bit < 32 && fg.addr < 0x80;
  }
  
@@ -163,8 +161,9 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 +
 +/* ---- F2 ---- */
 +
-+/* the controller registers an F2 transfer writes, saved before the first and written back after the last (also after an error) */
-+static const uint32_t fg_saved_offs[] = { I2C_ADDR, I2C_FIFO_CTL, I2C_INT_ENABLE, I2C_AUTO_CONF, I2C_CTL };
++/* ABL's controller setup (every writable register F1 dumps but the data ports), saved before F2 and written back after it, after a
++ * soft reset when anything failed; CTL last so the controller runs the restored configuration */
++static const uint32_t fg_saved_offs[] = { 0x04, 0x08, 0x0C, 0x10, 0x40, 0x44, 0x48, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x20, 0x00 };
 +static uint32_t fg_saved[sizeof fg_saved_offs / sizeof fg_saved_offs[0]];
 +
 +/* one auto-mode message (i2c-exynos5.c exynos5_i2c_message_start), polled; rd = NULL: write the n bytes of tx, else read n bytes. 0 = ok */
@@ -199,20 +198,18 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 +				fs = fg_rd(i2c, I2C_FIFO_STATUS);
 +			}
 +		}
-+		if ((st & INT_ERRORS) || (ts & TS_ERRORS)) {
-+			*why = (ts & (TS_NO_DEV_ACK | TS_NO_DEV)) || (st & INT_NO_DEV) ? "no ack from the device" : "transfer error";
-+			printf("SWEET FG: F2 %s: INT_STATUS %#x TRANS_STATUS %#x FIFO_STATUS %#x\n", *why, st, ts, fs);
++		if (st & INT_ERRORS) {      /* exynos5_i2c_irq :494-512 (exynos7/autov9 decode) */
++			*why = (st & (INT_NO_DEV_ACK | INT_NO_DEV)) ? "no ack from the device" : (st & INT_TIMEOUT) ? "device timeout" : "arbitration lost";
++			printf("SWEET FG: F2 %s: INT_STATUS %#x TRANS_STATUS %#x (master state %u) FIFO_STATUS %#x\n", *why, st, ts, TS_MASTER_ST(ts), fs);
 +			return -1;
 +		}
-+		/* done: a fresh event in INT_STATUS (cleared above): TRANS_DONE of the exynos7/autov9 variant, or INT_I2C (bit 9) of the
-+		 * exynos5 variant together with TRANS_DONE in TRANS_STATUS (exynos5_i2c_irq :491-543; TRANS_STATUS alone is not trusted:
-+		 * ABL left its done bit set, run fg1-oriole1); and, for a read, every byte, for a write, the TX FIFO drained */
-+		if (((st & INT_TRANS_DONE) || ((st & INT_NO_DEV_ACK) && (ts & TS_TRANS_DONE))) && (is_read ? got == n : (fs & FIFO_TX_EMPTY) != 0)) {
++		/* done: TRANS_DONE in INT_STATUS (cleared above), and for a read every byte, for a write the TX FIFO drained */
++		if ((st & INT_TRANS_DONE) && (is_read ? got == n : (fs & FIFO_TX_EMPTY) != 0)) {
 +			break;
 +		}
 +		if (fg_now_us() - t0 > I2C_TIMEOUT_US) {
 +			*why = "timeout";
-+			printf("SWEET FG: F2 timeout: INT_STATUS %#x TRANS_STATUS %#x FIFO_STATUS %#x got %u of %u\n", st, ts, fs, got, n);
++			printf("SWEET FG: F2 timeout: INT_STATUS %#x TRANS_STATUS %#x (master state %u) FIFO_STATUS %#x got %u of %u\n", st, ts, TS_MASTER_ST(ts), fs, got, n);
 +			return -2;
 +		}
 +	}
@@ -304,7 +301,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 +		printf("SWEET FG: gauge %-10s [%#04x] = %#06x\n", fg_regs[i].name, fg_regs[i].reg, v);
 +		fg_print_value(fg_regs[i].reg, v);
 +	}
-+	if (rc == -2) {     /* a transfer that did not end: soft reset (exynos5_i2c_reset :454-461), then ABL's values below */
++	if (rc != 0) {      /* any failure: soft reset (exynos5_i2c_reset :454-461) so no transfer stays queued, then ABL's values below */
 +		ctl = fg_rd(i2c, I2C_CTL);
 +		fg_wr(i2c, I2C_CTL, ctl | CTL_SW_RST);
 +		fg_wr(i2c, I2C_CTL, ctl & ~CTL_SW_RST);
@@ -314,13 +311,13 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
 +	for (i = 0; i < nsaved; i++) {
 +		fg_wr(i2c, fg_saved_offs[i], fg_saved[i]);
 +	}
-+	printf("SWEET FG: F2 %s; controller registers restored: CTL %#x FIFO_CTL %#x INT_ENABLE %#x AUTO_CONF %#x ADDR %#x\n",
-+	    rc ? "stopped" : "done", fg_rd(i2c, I2C_CTL), fg_rd(i2c, I2C_FIFO_CTL), fg_rd(i2c, I2C_INT_ENABLE), fg_rd(i2c, I2C_AUTO_CONF),
-+	    fg_rd(i2c, I2C_ADDR));
++	printf("SWEET FG: F2 %s; ABL setup restored: CTL %#x FIFO_CTL %#x CONF %#x AUTO_CONF %#x TIMING_FS1 %#x INT_ENABLE %#x ADDR %#x; TRANS_STATUS %#x FIFO_STATUS %#x\n",
++	    rc ? "stopped" : "done", fg_rd(i2c, I2C_CTL), fg_rd(i2c, I2C_FIFO_CTL), fg_rd(i2c, 0x40), fg_rd(i2c, I2C_AUTO_CONF), fg_rd(i2c, 0x60),
++	    fg_rd(i2c, I2C_INT_ENABLE), fg_rd(i2c, I2C_ADDR), fg_rd(i2c, I2C_TRANS_STATUS), fg_rd(i2c, I2C_FIFO_STATUS));
  }
  
  /* F1: CMU words, USI mode, pads; the controller only behind its two gates */
-@@ -181,8 +420,9 @@
+@@ -181,8 +416,9 @@
  {
  	vm_offset_t cmu, mode, i2c;
  	uint32_t ipclk, pclk, m, gb;
@@ -331,7 +328,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  	fg_sleep_ms(fg.delay_s * 1000u);
  	cmu = fg_map(fg.cmu_pa, fg.cmu_size);
  	mode = fg_map(fg.mode_pa, 4);
-@@ -201,8 +441,8 @@
+@@ -201,8 +437,8 @@
  	m = fg_rd(mode, 0);
  	printf("SWEET FG: sysreg USI12 mode (%#llx) = %#x (I2C = %#x, so %s)\n", fg.mode_pa, m, fg.mode_i2c,
  	    (m & fg.mode_mask) == fg.mode_i2c ? "I2C" : "not I2C");
@@ -342,7 +339,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  	if (!(ipclk & gb) || !(pclk & gb)) {
  		printf("SWEET FG: HSI2C12 not read: a gate is off (ipclk_5 %s, pclk_5 %s); F1 done\n", (ipclk & gb) ? "on" : "off",
  		    (pclk & gb) ? "on" : "off");
-@@ -219,6 +459,13 @@
+@@ -219,6 +455,13 @@
  	printf("SWEET FG: usi CON[%#x] = %#x OPTION[%#x] = %#x\n", fg.usi_off + USI_CON, fg_rd(i2c, fg.usi_off + USI_CON),
  	    fg.usi_off + USI_OPTION, fg_rd(i2c, fg.usi_off + USI_OPTION));
  	printf("SWEET FG: F1 done\n");
@@ -356,7 +353,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  }
  
  static void
-@@ -251,7 +498,7 @@
+@@ -251,7 +494,7 @@
  		return;    /* not this board: stay silent */
  	}
  	(void)PE_parse_boot_argn("sweetfg", &mode, sizeof(mode));
@@ -365,7 +362,7 @@ diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
  		return;
  	}
  	(void)PE_parse_boot_argn("sweetfgdelay", &delay_s, sizeof(delay_s));
-@@ -263,6 +510,7 @@
+@@ -263,6 +506,7 @@
  		return;
  	}
  	fg.delay_s = (uint32_t)delay_s;

@@ -41,3 +41,13 @@ Reading [obs unless tagged]:
 - ADDR 0x9400 = slave address field (bits 19:10) 0x25 [guess on the field: HSI2C_SLV_ADDR_MAS = (x & 0x3ff) << 10 in i2c-exynos5.c]: ABL's last
   transaction on this bus was to 0x25, not the gauge (0x36).
 - Next: F2 = one auto-mode transaction per register (pointer write + 2-byte read) to 0x36 using ABL's timing: DevName 0x21, then RepSOC, VCell.
+
+# F2, run fg2-oriole1 (kernel xnu-990f84a, sweetfg=2 sweetfgdelay=200): stopped at the first transfer, no panic
+    SWEET FG: F2: reading the gauge at I2C 0x36
+    SWEET FG: F2 transfer error: INT_STATUS 0x1 TRANS_STATUS 0xa0002 FIFO_STATUS 0x1000001
+    SWEET FG: F2 DevName (0x21) failed: transfer error
+    SWEET FG: F2 stopped; controller registers restored: CTL 0x48 FIFO_CTL 0x80083 INT_ENABLE 0x80 AUTO_CONF 0x30001 ADDR 0x9400
+- my mistake, not the bus: the code treated TRANS_STATUS bit 1 as TRANS_ABORT (the exynos5 layout). INT_STATUS 0x1 (TX_ALMOSTEMPTY) and
+  TRANS_STATUS[3:0] = 2 (HSI2C_MASTER_ST_RESTART) with MASTER_BUSY (bit 17) mean the exynos7/autov9 layout: the transfer had just started,
+  the register byte still in the TX FIFO (level 1). Also explains ABL's 0x00080001 (state 1 = START) [guess on bit 19].
+- fixed in 0157 (second version): INT_STATUS decode only, soft reset + full restore of ABL's setup after any failure.
