@@ -1,0 +1,144 @@
+SWEET FLIP test (patch 0161, boot-arg sweetflip=1, default off; docs/research/44 section 2 step 5): the first page flip, reversible and outside CoreAnimation, to learn whether the display reads physical addresses without touching the SysMMU registers (the run 7 hang suspect). sweetflipdelay seconds (default 240) after AppleCLCD starts, three cycles of: RDMA L0 BASEADDR_Y8 := a colour-bar buffer at 0xC8000000 (low bank, no reserved node, outside XNU RAM), window 5 shadow update request, 5 s, back to 0xFAC00000, 5 s. Only from the display state run dpu2 observed; the buffer is filled and read back before any display register is written; the shadow address is logged at each latch.
+
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -276,9 +276,130 @@
+ 	(void)p0;
+ 	(void)p1;
+ 	sweet_fb_replay_once();
++}
++
++/*
++ * Patch 0161 (boot-arg sweetflip=1, default off; docs/research/44 section 2 step 5): the first page flip, reversible and outside
++ * CoreAnimation. It answers whether the display reads physical addresses (no SysMMU translation: page flips to contiguous buffers
++ * below 4 GB work) without touching the SysMMU registers (the run 7 hang suspect). sweetflipdelay=S seconds after AppleCLCD starts
++ * (default 240), three times: show a buffer of colour bars for 5 s, then the boot framebuffer again for 5 s.
++ *   Buffer: 0xC8000000, 4320 x 2400 bytes, in the low-bank range no reserved-memory node uses (0xC0000000-0xE0000000, research 44 U4:
++ *     sec_dram ends at 0xC0000000, sec_pt starts at 0xE0000000) and outside XNU's RAM (board.json xnu_ram 0x880000000+). Mapped with
++ *     ml_io_map (uncached: the display sees every store), filled, and three words read back before any display register is touched.
++ *   Flip: RDMA L0 RDMA_BASEADDR_Y8 (0x1C0B0000 + 0x40, regs-dpp.h:173, dpp_reg.c:686) := the buffer, then SHD_REG_UP_REQ (DECON0
++ *     0x1C300000 + 0x50) |= window 5 (SHD_REG_UP_REQ_WIN(5), regs-decon.h:143, decon_reg_update_req_window decon_reg.c:2045-2051);
++ *     the panel TE triggers frames continuously (TRIG_CON 0x3061, HW_TRIG_EN, regs-decon.h:97-116), so the next frame latches it.
++ *     Latched = the shadow address RDMA_BASEADDR_Y8 + DMA_SHD_OFFSET (0x440, dma_reg_get_shd_addr dpp_reg.c:1022-1027) shows it.
++ *   Only from the state run dpu2 observed (window 5 on, channel 0 = DPP L0, L0 at 0xFAC00000 both in the SFR and the shadow, image
++ *     2400 x 1080); anything else: logged, nothing written. Back to 0xFAC00000 after each 5 s and at the end, also when a latch times out.
++ * Nothing else is written; the copies into 0xFAC00000 go on meanwhile (they show again after each restore).
++ */
++#define SWEET_FLIP_BUF      0xC8000000u
++#define SWEET_FLIP_FB       0xFAC00000u
++#define SWEET_FLIP_W        1080u
++#define SWEET_FLIP_H        2400u
++#define SWEET_FLIP_STRIDE   4320u
++
++static vm_offset_t sweet_flip_decon, sweet_flip_rdma;
++
++/* RDMA L0 := addr, request window 5's shadow update, wait up to 200 ms for the shadow address. 0 = latched */
++static int
++sweet_flip_to(uint32_t addr, const char *what)
++{
++#define SWEET_FLIP_RD(b, o) (*(volatile uint32_t *)((b) + (o)))
++#define SWEET_FLIP_WR(b, o, v) do { *(volatile uint32_t *)((b) + (o)) = (v); __asm__ volatile ("dsb sy" ::: "memory"); } while (0)
++	uint64_t t0, t1, ns;
++	SWEET_FLIP_WR(sweet_flip_rdma, 0x40, addr);
++	SWEET_FLIP_WR(sweet_flip_decon, 0x50, SWEET_FLIP_RD(sweet_flip_decon, 0x50) | (1u << 5));
++	t0 = mach_absolute_time();
++	for (unsigned i = 0; i < 200; i++) {
++		if (SWEET_FLIP_RD(sweet_flip_rdma, 0x440) == addr && (SWEET_FLIP_RD(sweet_flip_decon, 0x50) & (1u << 5)) == 0) {
++			t1 = mach_absolute_time();
++			absolutetime_to_nanoseconds(t1 - t0, &ns);
++			IOLog("SWEET FLIP: %s 0x%08x latched after %llu us (y8 0x%08x shd 0x%08x up_req 0x%08x)\n", what, addr, ns / 1000,
++			    SWEET_FLIP_RD(sweet_flip_rdma, 0x40), SWEET_FLIP_RD(sweet_flip_rdma, 0x440), SWEET_FLIP_RD(sweet_flip_decon, 0x50));
++			return 0;
++		}
++		IODelay(1000);
++	}
++	IOLog("SWEET FLIP: %s 0x%08x NOT latched in 200 ms (y8 0x%08x shd 0x%08x up_req 0x%08x)\n", what, addr,
++	    SWEET_FLIP_RD(sweet_flip_rdma, 0x40), SWEET_FLIP_RD(sweet_flip_rdma, 0x440), SWEET_FLIP_RD(sweet_flip_decon, 0x50));
++	return -1;
++}
++
++static void
++sweet_flip_test(thread_call_param_t p0, thread_call_param_t p1)
++{
++	(void)p0;
++	(void)p1;
++	static const uint32_t bars[8] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFFFFu, 0xFFFFFF00u, 0xFF00FFFFu, 0xFFFF00FFu, 0xFF000000u };
++	vm_offset_t wincon = ml_io_map(0x1C330000, 0x6000);
++	vm_offset_t buf = ml_io_map(SWEET_FLIP_BUF, SWEET_FLIP_STRIDE * SWEET_FLIP_H);
++	sweet_flip_decon = ml_io_map(0x1C300000, 0x1000);
++	sweet_flip_rdma = ml_io_map(0x1C0B0000, 0x1000);
++	if (!wincon || !buf || !sweet_flip_decon || !sweet_flip_rdma) {
++		IOLog("SWEET FLIP: a mapping failed, no test\n");
++		return;
++	}
++	uint32_t con5 = SWEET_FLIP_RD(wincon, 0x5000), y8 = SWEET_FLIP_RD(sweet_flip_rdma, 0x40), shd = SWEET_FLIP_RD(sweet_flip_rdma, 0x440);
++	uint32_t img = SWEET_FLIP_RD(sweet_flip_rdma, 0x18), up = SWEET_FLIP_RD(sweet_flip_decon, 0x50);
++	IOLog("SWEET FLIP: state win5 con 0x%08x rdma L0 y8 0x%08x shd 0x%08x img 0x%08x up_req 0x%08x\n", con5, y8, shd, img, up);
++	if ((con5 & 1) == 0 || ((con5 >> 4) & 7) != 0 || y8 != SWEET_FLIP_FB || shd != SWEET_FLIP_FB || img != 0x09600438u || up != 0) {
++		IOLog("SWEET FLIP: not the observed display state (run dpu2), no test\n");
++		return;
++	}
++	IOLog("SWEET FLIP: filling the test buffer at 0x%08x (colour bars)\n", SWEET_FLIP_BUF);
++	for (uint32_t y = 0; y < SWEET_FLIP_H; y++) {
++		volatile uint32_t *row = (volatile uint32_t *)(buf + (vm_offset_t)y * SWEET_FLIP_STRIDE);
++		uint32_t c = bars[y / (SWEET_FLIP_H / 8)];
++		for (uint32_t x = 0; x < SWEET_FLIP_W; x++) {
++			row[x] = (x < 40 || x >= SWEET_FLIP_W - 40) ? 0xFF808080u : c;     /* grey edges: shows the whole width is read */
++		}
++	}
++	uint32_t r0 = *(volatile uint32_t *)(buf + 100 * 4), r1 = *(volatile uint32_t *)(buf + 1000 * SWEET_FLIP_STRIDE + 500 * 4);
++	uint32_t r2 = *(volatile uint32_t *)(buf + 2399 * SWEET_FLIP_STRIDE + 1079 * 4);
++	IOLog("SWEET FLIP: read back 0x%08x 0x%08x 0x%08x (want 0xffff0000 0xffffffff 0xff808080)\n", r0, r1, r2);
++	if (r0 != bars[0] || r1 != bars[1000 / (SWEET_FLIP_H / 8)] || r2 != 0xFF808080u) {
++		IOLog("SWEET FLIP: the test buffer does not hold what was written, no test\n");
++		return;
++	}
++	for (int cycle = 1; cycle <= 3; cycle++) {
++		IOLog("SWEET FLIP: cycle %d: colour bars for 5 s\n", cycle);
++		int rc = sweet_flip_to(SWEET_FLIP_BUF, "to bars");
++		IOSleep(rc == 0 ? 5000 : 100);
++		rc = sweet_flip_to(SWEET_FLIP_FB, "back to fb");
++		if (rc != 0) {
++			IOLog("SWEET FLIP: restore did not latch; stop\n");
++			return;
++		}
++		IOSleep(5000);
++	}
++	IOLog("SWEET FLIP: done (shd 0x%08x)\n", SWEET_FLIP_RD(sweet_flip_rdma, 0x440));
++#undef SWEET_FLIP_RD
++#undef SWEET_FLIP_WR
+ }
+ 
+ static void
++sweet_flip_arm(void)
++{
++	int on = 0, delay_s = 240;
++	if (!PE_parse_boot_argn("sweetflip", &on, sizeof(on)) || on != 1) {
++		return;
++	}
++	(void)PE_parse_boot_argn("sweetflipdelay", &delay_s, sizeof(delay_s));
++	if (delay_s < 30 || delay_s > 3600) {
++		delay_s = 240;
++	}
++	thread_call_t tc = thread_call_allocate(sweet_flip_test, NULL);
++	IOLog("SWEET FLIP: armed, test in %d s\n", delay_s);
++	if (tc != NULL) {
++		uint64_t deadline;
++		nanoseconds_to_deadline((uint64_t)delay_s * NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(tc, deadline);
++	}
++}
++
++static void
+ sweet_fb_replay_arm(void)
+ {
+ 	char probe[4];
+@@ -573,6 +694,7 @@
+ 	}
+ 	OSSafeReleaseNULL(ns);
+ 	sweet_fb_replay_arm();          /* patch 0152 */
++	sweet_flip_arm();               /* patch 0161 */
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	return true;

@@ -461,6 +461,8 @@ sweetfb_native	patch:0060
 sweetfb_noconsole	patch:0046
 sweetfg	patch:0156
 sweetfgdelay	patch:0156
+sweetflip	patch:0161
+sweetflipdelay	patch:0161
 sweetfvmap	patch:0097
 sweetgpu	patch:0102
 sweetgpujob	patch:0103
