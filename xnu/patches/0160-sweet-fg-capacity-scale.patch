@@ -1,0 +1,28 @@
+SWEET FG capacity scale (patch 0160): sweetfg=2 prints RepCap/FullCapRep in mAh with the 2x factor the gauge uses at TaskPeriod 351 ms (max1720x_battery.h:33-37, max_m5.c:445-455; oriole TaskPeriod 0x2D00, gs101-oriole-battery-data.dtsi:50) and reads TaskPeriod (0x3C) to confirm it. Print only: SweetBattery is unchanged (it publishes percent x 4520 mAh). Current has no such factor (max1720x_battery.c:534-538).
+
+diff --git a/bsd/dev/sweet_fg_gs101.c b/bsd/dev/sweet_fg_gs101.c
+--- a/bsd/dev/sweet_fg_gs101.c
++++ b/bsd/dev/sweet_fg_gs101.c
+@@ -130,6 +130,7 @@
+ static const struct { uint8_t reg; const char *name; } fg_regs[] = {
+ 	{ 0x21, "DevName" }, { 0x00, "Status" }, { 0x06, "RepSOC" }, { 0x09, "VCell" }, { 0x0A, "Current" }, { 0x0B, "AvgCurrent" },
+ 	{ 0x08, "Temp" }, { 0x05, "RepCap" }, { 0x35, "FullCapRep" }, { 0x11, "TTE" }, { 0x20, "TTF" },
++	{ 0x3C, "TaskPeriod" },
+ };
+ 
+ static struct {
+@@ -373,8 +374,12 @@
+ 		printf("SWEET FG:   = %d.%01u C\n", s / 256, (unsigned)(((s < 0 ? -s : s) & 0xff) * 10 / 256));
+ 		break;
+ 	case 0x05:
+-	case 0x35:      /* capacity: 5 uVh / rsense = 1 mAh at 5 mOhm (max1720x_battery.h reg_to_micro_amp_h) [guess on the exact scale] */
+-		printf("SWEET FG:   = %u (raw capacity units, ~mAh at 5 mOhm)\n", v);
++	case 0x35:      /* capacity: 5 uVh / rsense = 1 mAh at 5 mOhm, times 2 with TaskPeriod 351 ms (max1720x_battery.h:33-37 reg_to_micro_amp_h,
++			 * max_m5.c:445-455 max_m5_period2caplsb; oriole TaskPeriod 0x2D00, gs101-oriole-battery-data.dtsi:50) */
++		printf("SWEET FG:   = %u mAh (2 mAh per unit at TaskPeriod 351 ms)\n", (unsigned)v * 500000u / FG_RSENSE * 2u / 1000u);
++		break;
++	case 0x3C:      /* TaskPeriod: 0x2D00 = 351 ms, 0x1680 = 175 ms (max_m5.c:41-42) */
++		printf("SWEET FG:   = %s\n", v == 0x2D00 ? "351 ms (capacity 2 mAh per unit)" : v == 0x1680 ? "175 ms (capacity 1 mAh per unit)" : "unexpected");
+ 		break;
+ 	case 0x11:
+ 	case 0x20:      /* time: 5.625 s */
