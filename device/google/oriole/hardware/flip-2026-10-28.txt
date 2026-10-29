@@ -46,3 +46,9 @@
   design A applies: scanout buffers = contiguous memory below 4 GB, flipped by writing BASEADDR_Y8 + window 5 update request.
 - also from the user's photos this session: the shim prints INITRD lo=86000000 hi=88E1F671 (ABL's ramdisk staging, low bank, well below
   the 0xC0000000-0xE0000000 carve-out: U4 partly closed); the iOS status bar shows the battery at 90 % with the charging bolt (xnu 0158/0159).
+
+## Page flip proper (xnu 0162, sweetflip=2), runs pf1-oriole2/3 (2026-10-29): flips on hardware, no panic
+- backboardd's scanout surfaces 2/3 in carve-out slots 0/1 (0xc8000000, 0xc9000000), the GPU renders into them (Mali import of
+  carve-out pages works), the display state check passes, present() flips (crop 22,18, bpr 4544).
+- frames fall back to the copy on empty swap records (mask 0x80000007, all ids 0): fixed in 0162 (keep the screen), not yet run.
+- not yet measured: frame rate while swiping, look of the flipped image (the user's eyes/photo).

@@ -224,10 +224,12 @@ diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.c
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -391,7 +391,72 @@
+@@ -389,6 +389,71 @@
+ 	IOLog("SWEET FLIP: done (shd 0x%08x)\n", SWEET_FLIP_RD(sweet_flip_rdma, 0x440));
+ #undef SWEET_FLIP_RD
  #undef SWEET_FLIP_WR
- }
- 
++}
++
 +/*
 + * Patch 0162 (boot-arg sweetflip=2, default off): the page flip itself (docs/research/44 sections 2 and 5). When the only layer of a
 + * swap is a scanout surface in the carve-out (SweetSurface patch 0162) covering the whole logical screen, present() points RDMA L0 at
@@ -270,7 +272,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +	return sweet_pf_ok != 0;
 +}
 +
- static void
++static void
 +sweet_pf_program(uint32_t size, uint32_t off, uint32_t addr)
 +{
 +	*(volatile uint32_t *)(sweet_pf_rdma + 0x10) = size;
@@ -291,12 +293,9 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +		sweet_pf_last = 0;
 +		IOLog("SWEET FLIP: back to the framebuffer copy after %llu flips\n", sweet_pf_flips);
 +	}
-+}
-+
-+static void
- sweet_flip_arm(void)
- {
- 	int on = 0, delay_s = 240;
+ }
+ 
+ static void
 @@ -748,6 +813,9 @@
  		return;
  	}
@@ -307,16 +306,22 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  		/* Blank: one write-only pass (WC reads are slow), then idle. */
  		uint32_t step = fb->fFadeStep;
  		if (step == 0) {
-@@ -910,6 +978,49 @@
- 		}
- 	}
- 
+@@ -907,7 +975,53 @@
+ 			/* Not PE_initialize_console(kPEDisableScreen): its console switch
+ 			 * writes the read-only-late cons_ops_index and panics. */
+ 			sweet_console_muted = 1;
++		}
++	}
++
 +	if (sweet_pf_ready()) {         /* patch 0162: page flip when the frame is one full-screen carve-out surface */
 +		uint32_t id0 = get32(rec, 0x54);
 +		const uint8_t *a0 = rec + 0x64, *b0 = rec + 0xc4;
 +		bool others = false;    /* another layer that would be drawn (the copy loop skips masked-out layers and id 0 the same way) */
 +		for (uint32_t l = 1; l < SWEET_FB_LAYERS; l++) {
 +			others |= (mask & (1u << l)) && get32(rec, 0x54 + 4 * l) != 0;
++		}
++		if (id0 == 0 && !others) {
++			return;         /* a frame with no surface (run pf1-oriole3: mask 0x80000007, ids 0): the copy draws nothing either; keep the screen */
 +		}
 +		SweetSurface *f = ((mask & 1u) && id0 != 0 && !others) ? sweet_surface_copy(id0) : NULL;
 +		bool ok = f != NULL && f->carveSlot >= 0 && f->width == fLogicalW && f->height == fLogicalH && fOffX >= 0 && fOffY >= 0 &&
@@ -332,7 +337,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +				    get32(rec, 0x58), get32(rec, 0x5c), f ? f->carveSlot : -9, f ? f->width : 0, f ? f->height : 0, f ? f->offset : 0,
 +				    (int)get32(a0, 0), (int)get32(a0, 4), (int)get32(b0, 0), (int)get32(b0, 4), (int)get32(b0, 8), (int)get32(b0, 12));
 +			}
-+		}
+ 		}
 +		if (ok) {
 +			uint32_t addr = (uint32_t)(f->carvePhys + f->offset);
 +			if (!sweet_pf_flipped || addr != sweet_pf_last) {
@@ -352,8 +357,6 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +		}
 +		OSSafeReleaseNULL(f);
 +		sweet_pf_unflip();
-+	}
-+
+ 	}
+ 
  	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
- 		uint32_t id = get32(rec, 0x54 + 4 * layer);
- 		const uint8_t *a = rec + 0x64 + 16 * layer;
