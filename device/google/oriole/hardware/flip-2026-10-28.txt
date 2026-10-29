@@ -23,4 +23,26 @@
     SWEET FLIP: back to fb 0xfac00000 latched after 7836 us (y8 0xfac00000 shd 0xfac00000 up_req 0x00000000)
     SWEET FLIP: done (shd 0xfac00000)
 - the shadow (active) RDMA L0 address follows each write within one TE frame (1-8 ms); window 5 update request clears; restored to 0xfac00000 at the end.
-- what the panel showed during the 5 s windows: (the user's photo/description, pending)
+- the panel during the 5 s windows: not seen (the user was not watching at that moment).
+
+## Run flip1-oriole3 (2026-10-29 00:19Z, kernel xnu-0429345, sweetfliphold=30): THE DISPLAY READS PHYSICAL ADDRESSES
+    REPLAY: SWEET FLIP: armed, test in 240 s
+    SWEET FLIP: state win5 con 0x00000001 rdma L0 y8 0xfac00000 shd 0xfac00000 img 0x09600438 up_req 0x00000000
+    SWEET FLIP: filling the test buffer at 0xc8000000 (colour bars)
+    SWEET FLIP: read back 0xffff0000 0xffffffff 0xff808080 (want 0xffff0000 0xffffffff 0xff808080)
+    SWEET FLIP: cycle 1: colour bars for 30 s
+    SWEET FLIP: to bars 0xc8000000 latched after 14847 us (y8 0xc8000000 shd 0xc8000000 up_req 0x00000000)
+    SWEET FLIP: back to fb 0xfac00000 latched after 8011 us (y8 0xfac00000 shd 0xfac00000 up_req 0x00000000)
+    SWEET FLIP: cycle 2: colour bars for 30 s
+    SWEET FLIP: to bars 0xc8000000 latched after 14881 us (y8 0xc8000000 shd 0xc8000000 up_req 0x00000000)
+    SWEET FLIP: back to fb 0xfac00000 latched after 5713 us (y8 0xfac00000 shd 0xfac00000 up_req 0x00000000)
+    SWEET FLIP: cycle 3: colour bars for 30 s
+    SWEET FLIP: to bars 0xc8000000 latched after 12567 us (y8 0xc8000000 shd 0xc8000000 up_req 0x00000000)
+    SWEET FLIP: back to fb 0xfac00000 latched after 1147 us (y8 0xfac00000 shd 0xfac00000 up_req 0x00000000)
+    SWEET FLIP: done (shd 0xfac00000)
+- the user's photo during a 30 s window: exactly the test buffer, top to bottom red, green, blue, white, yellow, cyan, magenta, black, with
+  the 40-pixel grey strips at both edges (the whole 1080 width and 2400 height read from 0xC8000000) [obs].
+- so the DPP fetches BASEADDR_Y8 as a PHYSICAL address: the DPU SysMMU does not translate (U1 closed without reading it). Research 44
+  design A applies: scanout buffers = contiguous memory below 4 GB, flipped by writing BASEADDR_Y8 + window 5 update request.
+- also from the user's photos this session: the shim prints INITRD lo=86000000 hi=88E1F671 (ABL's ramdisk staging, low bank, well below
+  the 0xC0000000-0xE0000000 carve-out: U4 partly closed); the iOS status bar shows the battery at 90 % with the charging bolt (xnu 0158/0159).

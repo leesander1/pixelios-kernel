@@ -1,6 +1,6 @@
 # 44 - Page flipping on the Pixel 6 display (gs101 DECON/DPP) instead of the per-frame CPU copy
 
-Status: DESIGN, 2026-10-27. Nothing here has run. Read-only research plus one hardware attempt (run 7, which hung, see 0.3).
+Status: DESIGN, 2026-10-27; 2026-10-28: the reversible flip test (xnu 0161) ran and the panel showed the buffer: design A (section 2). Read-only research plus one hardware attempt (run 7, which hung, see 0.3).
 Tags: **[src file:line]** read from source, **[obs run]** observed on hardware, **[guess]**.
 
 Sources (outside git, `~/pixelios-artifacts/refs/`): `gs-display` = Google `kernel/google-modules/display` @ `android-gs-raviole-5.10-android13-qpr3`
@@ -98,3 +98,14 @@ then work. Larger job; only if the dump shows the SysMMU on.
   as the framebuffer surface already does) without the VM ever owning it.
 - U5: the exact "update done" poll (decon_reg.c) and whether the HW trigger must be re-armed after a shadow update in command mode.
 - U6: which DPU block stalled the bus in run 7 (0147 answers it).
+
+## 5. Result of the flip test (2026-10-28, xnu 0161, runs flip1-oriole2/3, device/google/oriole/hardware/flip-2026-10-28.txt)
+
+- RDMA L0 `BASEADDR_Y8` := 0xC8000000 + `SHD_REG_UP_REQ` window 5 latches in one TE frame (1-15 ms; shadow 0x440 follows, the request bit
+  clears) and back to 0xFAC00000 the same way, six times, no panic [obs].
+- The panel showed the colour bars written at 0xC8000000 [obs, the user's photo]: the DPP reads physical addresses. **U1 closed: design A.**
+- U4: ABL stages the ramdisk at 0x86000000-0x88E1F671 [obs, shim INITRD line on the panel]; 0xC8000000.. was free in practice (the buffer
+  held its pattern and nothing faulted). The buffer must be mapped through IOMemoryDescriptor::withPhysicalAddress, not ml_io_map (10 MB
+  exhausts the device-mapping VA, run flip1-oriole1 panic).
+- Next (implementation): a carve-out allocator of panel-sized scanout surfaces at 0xC8000000+, SweetSurface backing for the surfaces
+  backboardd presents, present() flipping instead of copying, and swap completion held until the update request clears.
