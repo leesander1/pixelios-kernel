@@ -224,10 +224,11 @@ diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.c
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -390,8 +390,73 @@
+@@ -389,9 +389,74 @@
+ 	IOLog("SWEET FLIP: done (shd 0x%08x)\n", SWEET_FLIP_RD(sweet_flip_rdma, 0x440));
  #undef SWEET_FLIP_RD
  #undef SWEET_FLIP_WR
- }
++}
 +
 +/*
 + * Patch 0162 (boot-arg sweetflip=2, default off): the page flip itself (docs/research/44 sections 2 and 5). When the only layer of a
@@ -245,7 +246,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +static uint32_t sweet_pf_fb_size, sweet_pf_fb_off, sweet_pf_last;
 +static uint64_t sweet_pf_flips;
 +static vm_offset_t sweet_pf_decon, sweet_pf_rdma;
- 
++
 +static bool
 +sweet_pf_ready(void)
 +{
@@ -269,8 +270,8 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +		}
 +	}
 +	return sweet_pf_ok != 0;
-+}
-+
+ }
+ 
  static void
 +sweet_pf_program(uint32_t size, uint32_t off, uint32_t addr)
 +{
@@ -308,10 +309,13 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  		/* Blank: one write-only pass (WC reads are slow), then idle. */
  		uint32_t step = fb->fFadeStep;
  		if (step == 0) {
-@@ -910,6 +978,37 @@
- 		}
- 	}
- 
+@@ -907,7 +975,36 @@
+ 			/* Not PE_initialize_console(kPEDisableScreen): its console switch
+ 			 * writes the read-only-late cons_ops_index and panics. */
+ 			sweet_console_muted = 1;
++		}
++	}
++
 +	if (sweet_pf_ready()) {         /* patch 0162: page flip when the frame is one full-screen carve-out surface */
 +		uint32_t id0 = get32(rec, 0x54);
 +		const uint8_t *a0 = rec + 0x64, *b0 = rec + 0xc4;
@@ -325,24 +329,20 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +			if (!sweet_pf_flipped || addr != sweet_pf_last) {
 +				sweet_pf_program((f->height << 16) | (f->bytesPerRow / 4u), ((uint32_t)fOffY << 16) | (uint32_t)fOffX, addr);
 +				if (!sweet_pf_flipped) {
-+					IOLog("SWEET FLIP: page flip active: surface %u at 0x%08x %ux%u bpr %u crop %d,%d
-+", f->id, addr, f->width, f->height,
++					IOLog("SWEET FLIP: page flip active: surface %u at 0x%08x %ux%u bpr %u crop %d,%d\n", f->id, addr, f->width, f->height,
 +					    f->bytesPerRow, fOffX, fOffY);
 +				}
 +				sweet_pf_flipped = true;
 +				sweet_pf_last = addr;
 +				if ((++sweet_pf_flips % 1000) == 0) {
-+					IOLog("SWEET FLIP: %llu flips
-+", sweet_pf_flips);
++					IOLog("SWEET FLIP: %llu flips\n", sweet_pf_flips);
 +				}
 +			}
 +			f->release();
 +			return;
-+		}
+ 		}
 +		OSSafeReleaseNULL(f);
 +		sweet_pf_unflip();
-+	}
-+
+ 	}
+ 
  	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
- 		uint32_t id = get32(rec, 0x54 + 4 * layer);
- 		const uint8_t *a = rec + 0x64 + 16 * layer;
