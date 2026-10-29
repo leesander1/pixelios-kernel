@@ -1,0 +1,348 @@
+SWEET page flip (patch 0162, boot-arg sweetflip=2, default off; docs/research/44 sections 2 and 5): the screen-sized surfaces backboardd presents live in a scanout carve-out below 4 GB (16 slots of 16 MiB from 0xC8000000, write-combined only) and AppleCLCD::present() points the display at them (RDMA L0 SRC_SIZE / SRC_OFFSET / BASEADDR_Y8 + window 5 update request) instead of copying 10 MB with the CPU each frame. Run flip1-oriole3 proved the display scans physical addresses (photo of the test buffer). Any other frame (more layers, an ordinary surface, a partial rectangle, blanking) goes back to the boot framebuffer and the copy.
+SweetSurface: sweet_carve_wanted (sweetflip=2, backboardd, 4 bytes per pixel, at least 1080x2400, fits a slot), slot bitmap, carveSlot/carvePhys, slot given back in free(). Mali: imports carve-out surfaces, sweet_mali_map accepts carve-out pages although pmap_valid_page() does not, and neither it nor boCacheSync flushes them (they are never mapped cacheable; phystokv() has no address for them). The display state is checked once against run dpu2's before the first flip.
+
+diff --git a/bsd/dev/sweet_mali.h b/bsd/dev/sweet_mali.h
+--- a/bsd/dev/sweet_mali.h
++++ b/bsd/dev/sweet_mali.h
+@@ -6,6 +6,21 @@
+ #define SWEET_MALI_EXEC    1u            /* map: the GPU may execute (shader code) */
+ #define SWEET_MALI_REQ_FS  1u            /* submit: fragment job chain, runs on JS0 */
+ 
++/* Patch 0162: the scanout carve-out for page flips (docs/research/44 section 5): low-bank RAM below 4 GB (the display's DMA is 32 bit and
++ * not translated, run flip1-oriole3), outside XNU's managed RAM, used only for the screen-sized surfaces backboardd presents
++ * (SweetSurface, boot-arg sweetflip=2) and mapped by the CPU only write-combined (never cacheable): those pages need no cache
++ * maintenance and are valid GPU memory although pmap_valid_page() says no. 16 slots of 16 MiB from 0xC8000000 (inside the
++ * 0xC0000000-0xE0000000 range no reserved-memory node uses; ABL stages the ramdisk at 0x86000000-0x88E1F671, flip-2026-10-28.txt). */
++#define SWEET_CARVE_BASE   0xC8000000ull
++#define SWEET_CARVE_SLOT   0x1000000ull
++#define SWEET_CARVE_SLOTS  16u
++#define SWEET_CARVE_END    (SWEET_CARVE_BASE + SWEET_CARVE_SLOT * SWEET_CARVE_SLOTS)
++static inline int
++sweet_carve_pa(uint64_t pa)
++{
++	return pa >= SWEET_CARVE_BASE && pa < SWEET_CARVE_END;
++}
++
+ struct sweet_mali_info {
+ 	uint32_t gpu_id, l2_features, tiler_features, mem_features, mmu_features, as_present, js_present;
+ 	uint32_t thread_max_threads, thread_max_workgroup, thread_max_barrier, thread_features, texture_features[4], afbc_features, shader_present;
+diff --git a/bsd/dev/sweet_mali.c b/bsd/dev/sweet_mali.c
+--- a/bsd/dev/sweet_mali.c
++++ b/bsd/dev/sweet_mali.c
+@@ -351,7 +351,7 @@
+ 			return EINVAL;
+ 		}
+ 		/* gputest2: flush_dcache64 on a PA outside the kernel's managed RAM panicked (phystokv_range: illegal PA 0x573d...), so every PA is checked before any flush or page table write */
+-		if (!pmap_valid_page((ppnum_t)(pa16k[i] >> PAGE_SHIFT))) {
++		if (!sweet_carve_pa(pa16k[i]) && !pmap_valid_page((ppnum_t)(pa16k[i] >> PAGE_SHIFT))) {      /* patch 0162: carve-out pages are valid GPU memory */
+ 			printf("SWEET MALI: map refused, PA %#llx (page %u of %u) is not managed RAM (gPhysBase=%#lx)\n", (unsigned long long)pa16k[i], i, n, gPhysBase);
+ 			return EFAULT;
+ 		}
+@@ -363,7 +363,9 @@
+ 		return ENOMEM;
+ 	}
+ 	for (uint32_t i = 0; i < n && !e; i++) {
+-		flush_dcache64((addr64_t)pa16k[i], PAGE_SIZE, TRUE);          /* CPU-dirty lines of the new BO must not be written back over GPU data later */
++		if (!sweet_carve_pa(pa16k[i])) {      /* patch 0162: carve-out pages are never mapped cacheable, and phystokv() has no address for them */
++			flush_dcache64((addr64_t)pa16k[i], PAGE_SIZE, TRUE);  /* CPU-dirty lines of the new BO must not be written back over GPU data later */
++		}
+ 		for (uint32_t k = 0; k < 4 && !e; k++) {
+ 			e = mali_pt_map(&sm.pt, va + (uint64_t)(i * 4u + k) * MALI_PG, pa16k[i] + 0x1000ull * k, flags & SWEET_MALI_EXEC ? MALI_F_EXEC : 0);
+ 		}
+diff --git a/iokit/Kernel/arm/SweetMali.cpp b/iokit/Kernel/arm/SweetMali.cpp
+--- a/iokit/Kernel/arm/SweetMali.cpp
++++ b/iokit/Kernel/arm/SweetMali.cpp
+@@ -313,8 +313,9 @@
+ 		OSSafeReleaseNULL(s);
+ 		return kIOReturnNotFound;
+ 	}
+-	/* review M4: only kernel-allocated surface buffers; a physical descriptor (the panel framebuffer) would panic flush_dcache64 */
+-	if (OSDynamicCast(IOBufferMemoryDescriptor, s->memory) == NULL) {
++	/* review M4: only kernel-allocated surface buffers; a physical descriptor (the panel framebuffer) would panic flush_dcache64.
++	 * Patch 0162: and the scanout surfaces in the carve-out (write-combined only, sweet_mali_map and boCacheSync skip their flushes) */
++	if (OSDynamicCast(IOBufferMemoryDescriptor, s->memory) == NULL && s->carveSlot < 0) {
+ 		s->release();
+ 		return kIOReturnUnsupported;
+ 	}
+@@ -360,7 +361,7 @@
+ 	for (uint32_t i = 0; i < b->n16k; i++) {
+ 		IOByteCount seg = 0;
+ 		addr64_t p = b->md->getPhysicalSegment((IOByteCount)i * page_size, &seg, kIOMemoryMapperNone);
+-		if (p != 0 && seg >= page_size) {
++		if (p != 0 && seg >= page_size && !sweet_carve_pa(p)) {     /* patch 0162: no cache lines for carve-out pages */
+ 			flush_dcache64(p, (unsigned)page_size, TRUE);       /* TRUE = physical address; clean + invalidate */
+ 		}
+ 	}
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -39,6 +39,8 @@
+ 	IOOptionBits              mapCache;     /* cache mode for user mappings */
+ 	IOBufferMemoryDescriptor *state;        /* shared state page, read-only for users */
+ 	IOMemoryMap              *kernelMap;    /* lazily created for kernel copies */
++	int32_t                   carveSlot;    /* patch 0162: scanout carve-out slot (sweetflip=2), -1 = ordinary memory */
++	uint64_t                  carvePhys;    /* its physical address */
+ 
+ 	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -27,6 +27,7 @@
+  * ignored (logged once per selector).
+  */
+ #include "SweetSurface.h"
++#include "../../../bsd/dev/sweet_mali.h"      /* patch 0162: SWEET_CARVE_* */
+ 
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+@@ -41,6 +42,7 @@
+ #include <libkern/c++/OSNumber.h>
+ #include <libkern/c++/OSUnserialize.h>
+ #include <sys/proc.h>
++#include <string.h>
+ 
+ enum {
+ 	kSweetSurfaceCreate             = 0,
+@@ -80,6 +82,59 @@
+ #define SWEET_SURFACE_WIRED_MAX         (1536ull << 20)
+ 
+ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
++
++/*
++ * Patch 0162 (boot-arg sweetflip=2, default off; docs/research/44 section 5): the screen-sized surfaces backboardd creates (layer 0 of every
++ * swap: 1125x2436, 4544 bytes per row, 13.9 MB, runs eagl5/6) get their pixels from the scanout carve-out (bsd/dev/sweet_mali.h
++ * SWEET_CARVE_*) instead of a kernel buffer, so AppleCLCD::present() can point the display at them (no CPU copy). Mapped write-combined
++ * everywhere (kernel and clients), like the panel framebuffer surface. A slot is taken here and given back in free(); when no slot is
++ * free, or the surface does not qualify, the ordinary buffer is used and present() copies it as before.
++ */
++static volatile UInt32 sweet_carve_used;        /* bit n = slot n taken */
++
++static int
++sweet_carve_take(void)
++{
++	for (unsigned n = 0; n < SWEET_CARVE_SLOTS;) {
++		UInt32 old = sweet_carve_used;
++		if (old & (1u << n)) {
++			n++;
++			continue;
++		}
++		if (OSCompareAndSwap(old, old | (1u << n), &sweet_carve_used)) {
++			return (int)n;
++		}
++		/* another bit changed meanwhile: look at slot n again */
++	}
++	return -1;
++}
++
++/* a surface the display can scan out as is: created by backboardd, 4 bytes per pixel, at least the panel's size, fits a slot */
++static bool
++sweet_carve_wanted(const SweetSurface *s)
++{
++	static int mode = -1;
++	char name[32];
++	if (mode < 0) {
++		int v = 0;
++		mode = PE_parse_boot_argn("sweetflip", &v, sizeof(v)) ? v : 0;
++	}
++	if (mode != 2 || s->bytesPerElement != 4 || s->elementWidth != 1 || s->elementHeight != 1 || s->width < 1080 || s->height < 2400 ||
++	    (s->bytesPerRow & 3) != 0 || s->allocSize > SWEET_CARVE_SLOT) {
++		return false;
++	}
++	proc_selfname(name, sizeof(name));
++	return strncmp(name, "backboardd", sizeof(name)) == 0;
++}
++
++static void
++sweet_carve_give(int n)
++{
++	UInt32 old;
++	do {
++		old = sweet_carve_used;
++	} while (!OSCompareAndSwap(old, old & ~(1u << n), &sweet_carve_used));
++}
+ 
+ void
+ SweetSurface::free()
+@@ -90,6 +145,10 @@
+ 	OSSafeReleaseNULL(kernelMap);
+ 	OSSafeReleaseNULL(memory);
+ 	OSSafeReleaseNULL(state);
++	if (carveSlot >= 0) {
++		sweet_carve_give(carveSlot);
++		carveSlot = -1;
++	}
+ 	OSObject::free();
+ }
+ 
+@@ -208,6 +267,7 @@
+ 		OSSafeReleaseNULL(s);
+ 		return NULL;
+ 	}
++	s->carveSlot = -1;      /* patch 0162: not in the carve-out (the object comes zeroed: 0 would be slot 0) */
+ 	s->state = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryKernelUserShared, page_size, page_size);
+ 	if (s->state == NULL) {
+@@ -708,6 +768,29 @@
+ 	}
+ 	s->parentID = args->scalarInputCount > 0 ? (uint32_t)args->scalarInput[0] : 0;
+ 	ret = sweet_surface_layout(s, props);
++	if (ret == kIOReturnSuccess && sweet_carve_wanted(s)) {     /* patch 0162 */
++		int slot = sweet_carve_take();
++		uint64_t pa = SWEET_CARVE_BASE + (uint64_t)(slot < 0 ? 0 : slot) * SWEET_CARVE_SLOT;
++		IOMemoryDescriptor *cm = slot >= 0 ? IOMemoryDescriptor::withPhysicalAddress(pa, s->allocSize, kIODirectionInOut) : NULL;
++		if (cm != NULL) {
++			s->memory = cm;
++			s->mapCache = kIOMapWriteCombineCache;
++			s->carveSlot = slot;
++			s->carvePhys = pa;
++			uintptr_t k = s->kernelAddress();
++			if (k == 0 || !sweet_surface_publish(s)) {
++				ret = k == 0 ? kIOReturnNoMemory : kIOReturnNoResources;
++			} else {
++				bzero((void *)k, s->allocSize);
++			}
++			IOLog("SWEET SURF: scanout surface %u %ux%u in carve-out slot %d at 0x%llx -> 0x%x\n", s->id, s->width, s->height, slot, pa, ret);
++			goto created;
++		}
++		if (slot >= 0) {
++			sweet_carve_give(slot);
++		}
++		IOLog("SWEET SURF: no carve-out slot for a scanout surface (%ux%u): ordinary memory\n", s->width, s->height);
++	}
+ 	if (ret == kIOReturnSuccess) {
+ 		IOBufferMemoryDescriptor *mem = NULL;
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+@@ -727,6 +810,7 @@
+ 			}
+ 		}
+ 	}
++created:
+ 	if (ret != kIOReturnSuccess || sweet_surface_creates_logged < 64) {
+ 		char name[32];
+ 		proc_selfname(name, sizeof(name));
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -390,8 +390,73 @@
+ #undef SWEET_FLIP_RD
+ #undef SWEET_FLIP_WR
+ }
++
++/*
++ * Patch 0162 (boot-arg sweetflip=2, default off): the page flip itself (docs/research/44 sections 2 and 5). When the only layer of a
++ * swap is a scanout surface in the carve-out (SweetSurface patch 0162) covering the whole logical screen, present() points RDMA L0 at
++ * it instead of copying it into the panel framebuffer: SRC_SIZE = the surface (width = bytes per row / 4, the buffer's row length in
++ * pixels, as the boot framebuffer has 4320 / 4; idma_reg_set_coordinates dpp_reg.c:120-128, f_w = the buffer width exynos_drm_dpp.c:357),
++ * SRC_OFFSET = the panel's origin inside the logical screen (fOffX, fOffY: the same crop the copy does), IMG_SIZE unchanged (2400 x 1080),
++ * BASEADDR_Y8 = the surface, then window 5's update request (latched at the next TE frame, run flip1-oriole2/3). Anything else (more
++ * layers, an ordinary surface, a partial rectangle, blanking) puts back the boot framebuffer's values and copies as before. The display
++ * state is checked once against run dpu2's (as the flip test does); if it differs, flipping stays off.
++ */
++static int sweet_pf_mode = -1;          /* -1 unread, 0 off, 2 on */
++static int sweet_pf_ok;                 /* the display state was checked and the RDMA/DECON mapped */
++static bool sweet_pf_flipped;
++static uint32_t sweet_pf_fb_size, sweet_pf_fb_off, sweet_pf_last;
++static uint64_t sweet_pf_flips;
++static vm_offset_t sweet_pf_decon, sweet_pf_rdma;
+ 
++static bool
++sweet_pf_ready(void)
++{
++	if (sweet_pf_mode < 0) {
++		int v = 0;
++		sweet_pf_mode = PE_parse_boot_argn("sweetflip", &v, sizeof(v)) && v == 2 ? 2 : 0;
++		if (sweet_pf_mode == 2) {
++			vm_offset_t wincon = ml_io_map(0x1C330000, 0x6000);
++			sweet_pf_decon = ml_io_map(0x1C300000, 0x1000);
++			sweet_pf_rdma = ml_io_map(0x1C0B0000, 0x1000);
++			uint32_t con5 = wincon ? *(volatile uint32_t *)(wincon + 0x5000) : 0;
++			uint32_t y8 = sweet_pf_rdma ? *(volatile uint32_t *)(sweet_pf_rdma + 0x40) : 0;
++			uint32_t img = sweet_pf_rdma ? *(volatile uint32_t *)(sweet_pf_rdma + 0x18) : 0;
++			if (sweet_pf_decon && (con5 & 1) && ((con5 >> 4) & 7) == 0 && y8 == SWEET_FLIP_FB && img == 0x09600438u) {
++				sweet_pf_fb_size = *(volatile uint32_t *)(sweet_pf_rdma + 0x10);
++				sweet_pf_fb_off = *(volatile uint32_t *)(sweet_pf_rdma + 0x14);
++				sweet_pf_ok = 1;
++			}
++			IOLog("SWEET FLIP: page flip %s (win5 con 0x%08x y8 0x%08x img 0x%08x src_size 0x%08x src_off 0x%08x)\n",
++			    sweet_pf_ok ? "on" : "OFF: not the observed display state", con5, y8, img, sweet_pf_fb_size, sweet_pf_fb_off);
++		}
++	}
++	return sweet_pf_ok != 0;
++}
++
+ static void
++sweet_pf_program(uint32_t size, uint32_t off, uint32_t addr)
++{
++	*(volatile uint32_t *)(sweet_pf_rdma + 0x10) = size;
++	*(volatile uint32_t *)(sweet_pf_rdma + 0x14) = off;
++	*(volatile uint32_t *)(sweet_pf_rdma + 0x40) = addr;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(sweet_pf_decon + 0x50) |= 1u << 5;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++/* back to the boot framebuffer (the copy path draws there) */
++static void
++sweet_pf_unflip(void)
++{
++	if (sweet_pf_flipped) {
++		sweet_pf_program(sweet_pf_fb_size, sweet_pf_fb_off, SWEET_FLIP_FB);
++		sweet_pf_flipped = false;
++		sweet_pf_last = 0;
++		IOLog("SWEET FLIP: back to the framebuffer copy after %llu flips\n", sweet_pf_flips);
++	}
++}
++
++static void
+ sweet_flip_arm(void)
+ {
+ 	int on = 0, delay_s = 240;
+@@ -748,6 +813,9 @@
+ 		return;
+ 	}
+ 	if (fb->fPowerOff) {
++		if (sweet_pf_flipped) {
++			sweet_pf_unflip();     /* patch 0162: blank the panel framebuffer, so show it */
++		}
+ 		/* Blank: one write-only pass (WC reads are slow), then idle. */
+ 		uint32_t step = fb->fFadeStep;
+ 		if (step == 0) {
+@@ -910,6 +978,37 @@
+ 		}
+ 	}
+ 
++	if (sweet_pf_ready()) {         /* patch 0162: page flip when the frame is one full-screen carve-out surface */
++		uint32_t id0 = get32(rec, 0x54);
++		const uint8_t *a0 = rec + 0x64, *b0 = rec + 0xc4;
++		SweetSurface *f = (mask == 1u && id0 != 0) ? sweet_surface_copy(id0) : NULL;
++		if (f != NULL && f->carveSlot >= 0 && f->width == fLogicalW && f->height == fLogicalH && fOffX >= 0 && fOffY >= 0 &&
++		    get32(a0, 0) == 0 && get32(a0, 4) == 0 && get32(b0, 0) == 0 && get32(b0, 4) == 0 &&
++		    (get32(b0, 8) == 0 || get32(b0, 8) == f->width) && (get32(b0, 12) == 0 || get32(b0, 12) == f->height) &&
++		    f->carvePhys + f->offset + (uint64_t)f->bytesPerRow * f->height <= f->carvePhys + f->allocSize &&
++		    f->carvePhys + f->offset < 0x100000000ull) {
++			uint32_t addr = (uint32_t)(f->carvePhys + f->offset);
++			if (!sweet_pf_flipped || addr != sweet_pf_last) {
++				sweet_pf_program((f->height << 16) | (f->bytesPerRow / 4u), ((uint32_t)fOffY << 16) | (uint32_t)fOffX, addr);
++				if (!sweet_pf_flipped) {
++					IOLog("SWEET FLIP: page flip active: surface %u at 0x%08x %ux%u bpr %u crop %d,%d
++", f->id, addr, f->width, f->height,
++					    f->bytesPerRow, fOffX, fOffY);
++				}
++				sweet_pf_flipped = true;
++				sweet_pf_last = addr;
++				if ((++sweet_pf_flips % 1000) == 0) {
++					IOLog("SWEET FLIP: %llu flips
++", sweet_pf_flips);
++				}
++			}
++			f->release();
++			return;
++		}
++		OSSafeReleaseNULL(f);
++		sweet_pf_unflip();
++	}
++
+ 	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
+ 		uint32_t id = get32(rec, 0x54 + 4 * layer);
+ 		const uint8_t *a = rec + 0x64 + 16 * layer;
