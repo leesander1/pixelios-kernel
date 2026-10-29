@@ -1,0 +1,210 @@
+#!/bin/bash
+# Build the patched XNU kernel on this Mac the way CI (.github/workflows/xnu.yml) does: same blacktop darwin-xnu-build pin, same
+# patch stack, Apple's own toolchain; only the Xcode differs (whatever xcode-select / DEVELOPER_DIR points at, e.g. Xcode 26, where CI
+# has Xcode 15.0.1). ONE report ending RESULT: PASS|FAIL|ERROR.
+#   tools/xnu-mac-build [--stack DIR] [--jobs N] [--timeout SEC] [--fresh] [--compare KERNEL]
+#   --stack DIR      directory holding the *.sh stagers and *.patch files (default: <repo>/xnu/patches)
+#   --jobs N         make -jN (default: hw.ncpu)
+#   --timeout SEC    kill the whole run after SEC seconds (default 5400)
+#   --fresh          delete the work dir first (cold build)
+#   --compare KERNEL a CI kernel to compare with: size, external symbols, SWEET symbols
+# Output kernel: $MACBUILD/out/kernel.development.sweet (feed it to tools/xrun --kernel). Everything lives in $MACBUILD
+# (default ~/pixelios-artifacts/macbuild), never in git or /tmp. No sudo: the Kernel Debug Kit is not needed for MACHINE_CONFIG=SWEET
+# (xnu only force-loads a KDK library for T6000/T8101/VMAPPLE, makedefs/MakeInc.def:861-864), so KDKROOT points at an empty dir.
+# Xcode 16+ iig: its generated code reads IORPC.kernelContent, a field xnu-8796 does not have. $MB/iig wraps it and keeps the
+# #else (non-KERNEL) branch of every "#ifdef KERNEL" block it emits (all of them are that one mechanism: Msg typedefs, kernelContent); that branch finds the content with IORPCMessageFromMach() in the
+# same contiguous Msg_With_Content layout that xnu-8796's IOUserServer builds, which is what Xcode 15's iig generated.
+# Incremental: every run patches a fresh copy of pristine xnu and rsync -c's only the changed files into the work tree, so make
+# rebuilds what changed. Log: $MACBUILD/build.log. Exit: 0 PASS, 1 FAIL, 2 ERROR.
+set -euo pipefail
+ARGS=("$@"); SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0"); cd "$(dirname "$SELF")/.."
+ROOT=$PWD
+A=${ARTIFACTS:-$HOME/pixelios-artifacts}
+MB=${MACBUILD:-$A/macbuild}
+TAG=xnu-8796.141.3
+DXB_REPO=https://github.com/blacktop/darwin-xnu-build
+DXB_SHA=$(sed -n 's/^ *DXB_SHA: *//p' "$ROOT/.github/workflows/xnu.yml")
+stack=$ROOT/xnu/patches; jobs=$(sysctl -n hw.ncpu); tmo=5400; fresh=0; compare=""
+while [ $# -gt 0 ]; do case "$1" in
+	--stack) stack=$(cd "$2" && pwd); shift 2 ;; --jobs) jobs=$2; shift 2 ;; --timeout) tmo=$2; shift 2 ;;
+	--fresh) fresh=1; shift ;; --compare) compare=$2; shift 2 ;;
+	*) echo "unknown option $1 (see the header of tools/xnu-mac-build)" >&2; exit 2 ;; esac; done
+mkdir -p "$MB"; LOG=$MB/build.log
+START=$(date +%s)
+finish() { local res=$1; shift; { echo "RESULT: $res $1"; shift; [ $# -eq 0 ] || printf '%s\n' "$@"; echo "log: $LOG"; }; case $res in PASS) exit 0 ;; ERROR) exit 2 ;; *) exit 1 ;; esac; }
+say() { echo "[$(( $(date +%s) - START ))s] $*" | tee -a "$LOG" >&2; }
+[ "$(uname)" = Darwin ] || finish ERROR "macOS only (on Linux use tools/xnu-local-build)"
+# the whole run is bounded (macOS has no timeout(1): a watchdog kills the process group)
+if [ -z "${XMB_INNER:-}" ]; then
+	: >"$LOG"
+	set +m
+	XMB_INNER=1 "$SELF" ${ARGS[@]+"${ARGS[@]}"} & pid=$!
+	( sleep "$tmo"; pkill -TERM -P "$pid"; kill -TERM "$pid" ) >/dev/null 2>&1 & wd=$!
+	set +e; wait "$pid"; rc=$?; set -e
+	pkill -P "$wd" 2>/dev/null; kill "$wd" 2>/dev/null || true
+	[ $rc -lt 128 ] || { echo "RESULT: ERROR killed (timeout ${tmo}s?) (log: $LOG)"; exit 2; }
+	exit $rc
+fi
+
+# ---------------------------------------------------------------- prerequisites
+DEVELOPER_DIR=${DEVELOPER_DIR:-$(xcode-select -p 2>/dev/null || true)}
+[ -d "$DEVELOPER_DIR" ] || finish ERROR "no Xcode (xcode-select -p is empty)"
+export DEVELOPER_DIR
+xcv=$(xcodebuild -version 2>/dev/null | sed -n 1p)
+miss=""
+for t in git curl jq cmake ninja python3 rsync; do command -v $t >/dev/null || miss="$miss $t"; done
+[ -x /opt/homebrew/bin/bash ] || miss="$miss bash(>=4)"
+[ -z "$miss" ] || finish ERROR "missing host tools:$miss" "install them with: brew install jq bash cmake ninja"
+[ -n "$DXB_SHA" ] || finish ERROR "cannot read DXB_SHA from .github/workflows/xnu.yml"
+free=$(df -g "$HOME" | awk 'NR==2 {print $4}')
+[ "$free" -ge 4 ] || finish ERROR "only ${free} GB free on the home volume (a cold build needs about 4 GB)"
+[ $fresh = 0 ] || { say "--fresh: deleting $MB/dxb"; rm -rf "$MB/dxb" "$MB/stage"; }
+
+# ---------------------------------------------------------------- 1. recipe, pristine xnu, wrappers
+fetchsha() { # DIR URL SHA|TAG
+	[ -d "$1/.git" ] && return 0
+	rm -rf -- "$1"; git init -q "$1"
+	git -C "$1" fetch -q --depth 1 "$2" "$3" >>"$LOG" 2>&1 || finish ERROR "cannot fetch $3 from $2 (network?)"
+	git -C "$1" -c advice.detachedHead=false checkout -q FETCH_HEAD
+}
+D=$MB/dxb
+fetchsha "$D" "$DXB_REPO" "$DXB_SHA"
+[ "$(git -C "$D" rev-parse HEAD)" = "$DXB_SHA" ] || finish ERROR "$D is not at $DXB_SHA (use --fresh)"
+fetchsha "$MB/xnu-pristine" https://github.com/apple-oss-distributions/xnu "refs/tags/$TAG"
+mkdir -p "$MB/bin" "$MB/kdk-none"
+w() { cat >"$MB/bin/$1.new"; chmod +x "$MB/bin/$1.new"; cmp -s "$MB/bin/$1.new" "$MB/bin/$1" && rm -f "$MB/bin/$1.new" || mv "$MB/bin/$1.new" "$MB/bin/$1"; }
+# build.sh only checks that these exist (Xcode is installed; MACOS_VERSION is given, so gum never asks)
+printf '#!/bin/sh\nexit 0\n' | w xcodes
+printf '#!/bin/sh\nexit 0\n' | w gum
+w iig <<'EOF'
+#!/bin/bash
+# Xcode's iig, then keep the non-KERNEL branch of each "#ifdef KERNEL" block in its output (see tools/xnu-mac-build header)
+real=$(DEVELOPER_DIR=${DEVELOPER_DIR:-} xcrun -find iig) || exit 1
+"$real" "$@" || exit $?
+out=(); prev=""
+for a in "$@"; do case "$prev" in --header|--impl) out+=("$a") ;; esac; [ "$a" = -- ] && break; prev=$a; done
+exec python3 -I - "${out[@]}" <<'PY'
+import re, sys
+blk = re.compile(r'^#ifdef KERNEL\n(.*?)^#endif /\* KERNEL \*/\n', re.S | re.M)
+def keep_else(m):
+    body = m.group(1)
+    parts = re.split(r'^#else /\* KERNEL \*/\n', body, flags=re.M)
+    return parts[1] if len(parts) == 2 else ''
+for f in sys.argv[1:]:
+    try:
+        t = open(f).read()
+    except FileNotFoundError:
+        continue
+    n = blk.sub(keep_else, t)
+    if 'kernelContent' in n:
+        sys.exit('iig wrapper: kernelContent left in %s' % f)
+    if n != t:
+        open(f, 'w').write(n)
+PY
+EOF
+# build.sh with its last line (main "$@") removed, so its functions can be driven step by step
+grep -v '^main "\$@"$' "$D/build.sh" | sed 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' >"$MB/bin/dxb-lib.sh"
+grep -q 'arm64e arm64"' "$MB/bin/dxb-lib.sh" || finish ERROR "the libfirehose arm64 edit (xnu.yml) no longer matches build.sh"
+
+# ---------------------------------------------------------------- 2. patch a fresh copy, sync changed files into the work tree
+say "patching a fresh $TAG with $(ls "$stack"/*.patch | wc -l | tr -d ' ') patches ($xcv)"
+S=$MB/stage; rm -rf "$S"; mkdir -p "$S/patches"
+rsync -a --exclude .git "$MB/xnu-pristine/" "$S/xnu/"
+git -C "$S/xnu" init -q && git -C "$S/xnu" add -A >/dev/null && git -C "$S/xnu" -c user.name=x -c user.email=x@x commit -qm pristine
+cp "$D"/patches/*.patch "$S/patches/"
+cp "$stack"/*.patch "$S/patches/"; cp "$stack"/*.sh "$S/patches/" 2>/dev/null || true
+# the stagers fetch one pinned commit each: keep a local mirror per pin so only the first run needs that host
+mirrors=()
+for f in "$stack"/*.sh; do
+	url=$(grep -oE 'https://[^ "]+' "$f" | sort -u); sha=$(grep -oE '^[a-z_]+_sha=[0-9a-f]{40}' "$f" | cut -d= -f2 | sort -u)
+	[ -n "$url" ] && [ -n "$sha" ] || continue
+	[ "$(printf '%s\n' "$url" | wc -l)" -eq 1 ] && [ "$(printf '%s\n' "$sha" | wc -l)" -eq 1 ] || finish ERROR "$(basename "$f"): expected one URL and one *_sha pin"
+	m=$MB/mirror/$(printf '%s' "$url" | tr -c 'A-Za-z0-9' _).git
+	if ! git -C "$m" cat-file -e "$sha^{commit}" 2>/dev/null; then
+		say "mirroring $url @ ${sha:0:12}"
+		git init -q --bare "$m"; git -C "$m" config uploadpack.allowAnySHA1InWant true
+		git -C "$m" fetch -q --depth 1 "$url" "$sha" >>"$LOG" 2>&1 || finish ERROR "cannot fetch $sha from $url (network?)"
+	fi
+	mirrors+=("url.file://$m.insteadOf=$url")
+done
+export GIT_CONFIG_COUNT=${#mirrors[@]}
+[ ${#mirrors[@]} -eq 0 ] || for i in "${!mirrors[@]}"; do export GIT_CONFIG_KEY_$i="${mirrors[$i]%%=*}" GIT_CONFIG_VALUE_$i="${mirrors[$i]#*=}"; done
+cat >"$MB/bin/stage.sh" <<EOF
+set -euo pipefail
+source "$MB/bin/dxb-lib.sh"
+WORK_DIR="$S"; MACOS_VERSION=13.5; KERNEL_CONFIG=DEVELOPMENT; MACHINE_CONFIG=SWEET; KDKROOT="$MB/kdk-none"
+export MACOS_VERSION KERNEL_CONFIG MACHINE_CONFIG
+patches
+EOF
+/opt/homebrew/bin/bash "$MB/bin/stage.sh" >"$MB/patch.log" 2>&1 || finish ERROR "patching failed" "$(tail -5 "$MB/patch.log")"
+cat "$MB/patch.log" >>"$LOG"
+skipped=$(grep -c 'Skipping patch' "$MB/patch.log" || true)
+own_skipped=$(grep 'Skipping patch' "$MB/patch.log" | grep -c '/patches/[0-9]' || true)
+[ "$own_skipped" = 0 ] || finish FAIL "$own_skipped of our patches did not apply" "$(grep 'Skipping patch' "$MB/patch.log" | grep '/patches/[0-9]' | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-200)"
+mkdir -p "$D/xnu"
+changed=$(rsync -rlc --delete --exclude .git --itemize-changes "$S/xnu/" "$D/xnu/" | grep -v '^\.d' || true)
+nchg=$(printf '%s' "$changed" | grep -c . || true)
+say "patched ($skipped upstream dxb patches skipped as in CI); $nchg files changed in the work tree"
+# headers installed into the fakeroot are only redone when a header-like file changed
+if printf '%s\n' "$changed" | grep -qE '\.(h|defs|iig|exports|modulemap)$|Makefile|makedefs/|/conf/'; then rm -f "$D/fakeroot/.xnu_headers_installed"; fi
+
+# ---------------------------------------------------------------- 3. build (build.sh's own steps, KDK and Xcode download skipped)
+cat >"$MB/bin/run.sh" <<EOF
+set -euo pipefail
+source "$MB/bin/dxb-lib.sh"
+MACOS_VERSION=13.5; KERNEL_CONFIG=DEVELOPMENT; MACHINE_CONFIG=SWEET; KDKROOT="$MB/kdk-none"
+export MACOS_VERSION KERNEL_CONFIG MACHINE_CONFIG
+setup_xcode_toolchain
+export PATH="$MB/bin:\$PATH" IIG="$MB/bin/iig"
+choose_xnu
+venv
+build_bootstrap_cmds
+build_dtrace
+build_availabilityversions
+xnu_headers
+libsystem_headers
+libsyscall_headers
+build_libplatform
+build_libdispatch
+rm -f "\${BUILD_DIR}/xnu.obj/kernel.\${KERNEL_TYPE}"
+build_xnu
+EOF
+# code generated by an older iig wrapper (or none) is regenerated: make only looks at the .iig files' times
+for g in $(find "$D/build" -type d -name DriverKit -path '*/iokit/*' 2>/dev/null); do
+	[ -z "$(find "$g" -name '*.iig.cpp' ! -newer "$MB/bin/iig" | head -1)" ] || { say "removing stale iig output in $g"; rm -rf "$g"; }
+done
+# make -jN: build.sh hard-codes -j8
+sed -i '' "s/make install -j8 VERBOSE=YES \"\${CTF_TOOL_OVERRIDES/make install -j$jobs VERBOSE=YES \"\${CTF_TOOL_OVERRIDES/" "$MB/bin/dxb-lib.sh"
+say "building (make -j$jobs; cold about 15 min, incremental about 1-3 min)"
+set +e
+( cd "$D" && PATH="$MB/bin:/opt/homebrew/bin:$PATH" /opt/homebrew/bin/bash "$MB/bin/run.sh" ) >"$MB/make.log" 2>&1; rc=$?
+set -e
+sed 's/\x1b\[[0-9;]*m//g' "$MB/make.log" >>"$LOG"
+K=$D/fakeroot/System/Library/Kernels/kernel.development.sweet
+if [ $rc -ne 0 ] || [ ! -f "$K" ] || [ "$K" -ot "$MB/bin/run.sh" ]; then
+	errs=$(sed 's/\x1b\[[0-9;]*m//g' "$MB/make.log" | grep -E '^[^ ]+:[0-9]+:[0-9]+: (fatal )?error:|^ld: |Undefined symbols' | sed -n 1,8p || true)
+	finish FAIL "build failed (rc $rc)" "$errs"
+fi
+mkdir -p "$MB/out"
+cp -R "$D/fakeroot/System/Library/Kernels/." "$MB/out/"
+src=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+dirty=$(git -C "$ROOT" status --porcelain -- "$stack" 2>/dev/null | grep -c . || true)
+printf 'Built locally by tools/xnu-mac-build\nCommit: %s%s\nXcode: %s\nRecipe: %s@%s\n' "$src" "$([ "$dirty" = 0 ] || echo " (+$dirty uncommitted patch files)")" "$xcv" "$DXB_REPO" "$DXB_SHA" >"$MB/out/SOURCE.txt"
+(cd "$MB/out" && shasum -a 256 kernel.development.sweet >SHA256SUMS)
+size=$(stat -f %z "$MB/out/kernel.development.sweet")
+say "kernel: $MB/out/kernel.development.sweet ($size bytes)"
+
+# ---------------------------------------------------------------- 4. compare with a CI kernel
+notes=()
+if [ -n "$compare" ]; then
+	[ -f "$compare" ] || finish ERROR "--compare: no file $compare"
+	ext() { nm -gU "$1" 2>/dev/null | awk '{print $NF}' | sort -u; }
+	sw() { nm "$1" 2>/dev/null | awk '{print $NF}' | grep -iE 'sweet|AppleCLCD' | sort -u; }
+	ext "$compare" >"$MB/ci.ext"; ext "$MB/out/kernel.development.sweet" >"$MB/local.ext"
+	sw "$compare" >"$MB/ci.sw"; sw "$MB/out/kernel.development.sweet" >"$MB/local.sw"
+	notes+=("compare: CI $(stat -f %z "$compare") B vs local $size B")
+	notes+=("external symbols: CI $(wc -l <"$MB/ci.ext" | tr -d ' '), local $(wc -l <"$MB/local.ext" | tr -d ' '); only CI $(comm -23 "$MB/ci.ext" "$MB/local.ext" | wc -l | tr -d ' '), only local $(comm -13 "$MB/ci.ext" "$MB/local.ext" | wc -l | tr -d ' ')")
+	notes+=("SWEET/AppleCLCD symbols: only CI $(comm -23 "$MB/ci.sw" "$MB/local.sw" | wc -l | tr -d ' '), only local $(comm -13 "$MB/ci.sw" "$MB/local.sw" | wc -l | tr -d ' ') (lists: $MB/ci.sw, $MB/local.sw)")
+	notes+=("$(otool -l "$MB/out/kernel.development.sweet" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos|sdk/{printf "%s %s ", $1, $2} f&&/sdk/{exit}') (local)")
+fi
+finish PASS "kernel built in $(( $(date +%s) - START ))s: $MB/out/kernel.development.sweet" ${notes[@]+"${notes[@]}"}

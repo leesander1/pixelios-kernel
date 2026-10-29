@@ -1,4 +1,52 @@
-# Local kernel build (`tools/xnu-local-build`)
+# Local kernel build (`tools/xnu-mac-build` on macOS, `tools/xnu-local-build` on Linux)
+
+## macOS: `tools/xnu-mac-build`
+
+Builds the same `kernel.development.sweet` as CI on this Mac with whatever Xcode `xcode-select` points at (observed: Xcode 26.6,
+2026-10-29). It drives CI's own recipe (blacktop darwin-xnu-build at the `DXB_SHA` pinned in `.github/workflows/xnu.yml`, the same
+libfirehose arm64 edit) step by step; only the Xcode differs (CI: Xcode 15.0.1).
+
+```
+tools/xnu-mac-build [--fresh] [--jobs N] [--timeout SEC] [--compare CI_KERNEL] [--stack DIR]
+```
+
+- Output: `~/pixelios-artifacts/macbuild/out/kernel.development.sweet` (+ `SOURCE.txt` with the commit and Xcode). Logs:
+  `~/pixelios-artifacts/macbuild/build.log` (all), `make.log` (raw make). Ends with one `RESULT: PASS|FAIL|ERROR` line.
+- Needs: Xcode, Homebrew `jq bash cmake ninja`, ~4 GB free. No sudo, no Apple ID: the Kernel Debug Kit is not used for
+  `MACHINE_CONFIG=SWEET` (xnu force-loads a KDK library only for T6000/T8101/VMAPPLE, `makedefs/MakeInc.def:861-864`), so `KDKROOT` is an
+  empty directory.
+- Incremental: each run patches a fresh copy of pristine xnu (`macbuild/xnu-pristine`) in `macbuild/stage` and `rsync -c`s only changed
+  files into the work tree. Observed: cold ~15 min (*guess*: not timed end to end; the setup tools were built during the trial), one
+  incremental run 174 s, 8 jobs.
+- Network: the three stagers (`0019`/`0020`/`0026`) fetch pinned commits; each pin is mirrored once into `macbuild/mirror/` and later
+  runs use the mirror (`url.<mirror>.insteadOf`). On 2026-10-29 this Mac's resolver could not resolve `www.bearssl.org` (`host` could),
+  so the BearSSL mirror was seeded by hand: `git -C ~/pixelios-artifacts/macbuild/mirror/https___www_bearssl_org_git_BearSSL.git -c
+  http.curloptResolve=www.bearssl.org:443:<ip from host> fetch --depth 1 https://www.bearssl.org/git/BearSSL <bearssl_sha>`.
+
+### The one Xcode difference: iig
+
+Xcode 16+'s `iig` generates code that reads `IORPC.kernelContent` and declares kernel-only `X_Msg` types inside `#ifdef KERNEL`
+blocks; xnu-8796's `IORPC` (iokit/IOKit/IORPC.h:222-227) has no such field, so the build fails in `OSObject.iig.cpp` (observed). The
+wrapper `macbuild/bin/iig` runs Xcode's iig and then keeps the `#else` branch of every `#ifdef KERNEL ... #endif /* KERNEL */` block in
+its output (observed: all 94+94+94+93+36+18+3 such blocks are this one mechanism). The `#else` branch finds the payload with
+`IORPCMessageFromMach(rpc.message, false)` in the contiguous `X_Msg_With_Content` layout, which is the layout xnu-8796's own
+`IOUserServer` builds (*read*); so DriverKit RPC keeps working, unlike the Linux stand-in's stubs (*not tested on hardware*: PixOS loads no
+dext as far as known).
+
+### Compared with CI (observed, local 9575e65 vs CI `xnu-f301c44`, which differs by one small 0162 change)
+
+- External symbols: 24249 CI vs 24250 local; 0 only in CI; 1 only local (`_iBoot_Stage_2_version`, as on Linux).
+- SWEET/AppleCLCD symbols: 4 only in CI (`l___const.*` local constant labels the compiler names differently), 1 only local
+  (`_sweet_log_start`, a static not inlined).
+- Instruction set (llvm-objdump): PAC 0/0, LRCPC2 `ldapur`/`stlur` 0/0, `ldapr` 209/210, SHA3 0/0, BF16/I8MM 0/0: same profile as CI, no
+  ARMv8.4+ instructions that the Cortex-A76/A55/X1 lack (the Linux build needed `-mcpu=cortex-a76` for this; Apple clang's
+  `-arch arm64` did not).
+- Sizes 17,438,616 (CI) vs 16,886,760 B. `LC_BUILD_VERSION` minos/sdk 26.5 locally vs 14.0 in CI (the SDK Xcode ships; *guess*: the boot
+  shim ignores it).
+- Code generation is Xcode 26 clang vs Xcode 15 clang: different inlining, so record important hardware results with a CI kernel when
+  credits allow.
+
+## Linux: `tools/xnu-local-build`
 
 Builds the patched xnu-8796.141.3 `kernel.development.sweet` on this Linux box, without a Mac, as an alternative to the CI round trip
 (`.github/workflows/xnu.yml`). Tags: *observed* = measured on this machine on 2026-10-22; *read* = read from source; *guess*.

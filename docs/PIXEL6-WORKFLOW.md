@@ -51,7 +51,9 @@ unpacked on the phone (`pixelios-userland gpu/common/gzunpack.c`; the phone has 
 - **Build** (CI, ~5-10 min): commit, `git push`, then `gh workflow run xnu.yml --repo leesander1/pixelios-kernel --ref wip/gcc16-build`
   (pushing to `main` also triggers it; workflows on the fork are enabled). Then
   `tools/ci-kernel --commit HEAD --expect-string "<a string your patch logs>"` downloads and verifies it to `~/pixelios-artifacts/xnu-<sha>/`.
-  There is no local xnu build on this Mac (`tools/xnu-local-build` needs a Linux host).
+  **Local build on this Mac** (no CI minutes, ~3 min incremental): `tools/xnu-mac-build [--compare CI_KERNEL]` -> kernel at
+  `~/pixelios-artifacts/macbuild/out/kernel.development.sweet` (feed it to `tools/xrun --kernel`); see docs/LOCAL-BUILD.md "macOS".
+  It builds the working tree's `xnu/patches`, committed or not. (`tools/xnu-local-build` is the Linux equivalent.)
 - Kernel in use: the newest `~/pixelios-artifacts/xnu-<sha>` from `tools/ci-kernel` (as of 2026-10-27 evening: patches up to 0153 =
   backlight opt-in 0150 + console replay 0151-0153 (`sweetreplay=TEXT`, fires ~200 s after AppleCLCD start: use `--duration 480`)). Before that:
   `~/pixelios-artifacts/xnu-db4a387/kernel.development.sweet` (patches up to 0149: the backlight service, log-only unless
